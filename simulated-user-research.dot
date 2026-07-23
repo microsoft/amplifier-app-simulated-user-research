@@ -1,0 +1,554 @@
+// simulated-user-research.dot
+// ============================================================================
+// Simulated User Research pipeline — attractor DOT graph.
+//
+// Encodes the proven manual process end-to-end:
+//   1. SEED            (tool)      resumable scratch-instance seeding
+//   2. VISUAL CAPTURE   (box+bash)  browser walkthrough, 2 viewports, notes
+//   3. DESIGN REVIEWS   (2x box)   IA review + responsive review, PARALLEL
+//   4. PERSONA SESSIONS (Nx box)   sequential (single browser daemon), true
+//                                  first-run onboarding + tasks per persona
+//   5. SYNTHESIS        (box)      consolidated implementation-ready spec
+//   6. HUMAN GATE       (hexagon)  approve / revise (loop, capped) / end
+//
+// THE .DOT IS THE LOGIC HOME. Do not reimplement this process elsewhere —
+// change prompts/params/roster here and re-run.
+//
+// -- Design decisions worth reading before you edit -------------------------
+//
+// * BROWSER BRIDGE: box (LLM/codergen) nodes get a full spawned child agent
+//   session (loop-agent orchestrator + tool-bash + tool-filesystem + tool-
+//   search, per the attractor-pipeline bundle's per-provider agents). The
+//   `agent-browser` CLI is already on PATH on this box, so the spawned
+//   agent drives it directly via its bash tool — no `amplifier run -B
+//   browser-tester` subprocess-of-a-subprocess, no extra bundle composition.
+//   This is the recommended bridge: it's zero-ceremony, keeps the browser
+//   session inside the SAME node's context/thread, and avoids the latency
+//   and double-session overhead of shelling out to another full Amplifier
+//   session. (browser-tester's agents are an INTERACTIVE-session pattern —
+//   for delegate() inside a conversational agent — not a pipeline-node
+//   pattern; the box node's own bash tool is the right layer here.)
+//
+// * SEQUENTIAL PERSONAS (single browser daemon): the engine's concurrency
+//   model is single-threaded at the top level — only ONE node executes at
+//   a time UNLESS it is fanned out via shape=component (Section 3.8 of the
+//   attractor spec). The persona nodes below are a plain linear chain
+//   (never wrapped in a component/parallel node), so the engine itself
+//   structurally guarantees they never overlap. No extra locking needed —
+//   this IS the structural fix the design asked for.
+//
+// * FILES ARE THE CONTRACT: every stage reads/writes real files under
+//   $output_dir. Nothing depends on LLM context carrying prior conversation
+//   forward (every LLM node below uses fidelity="truncate" — fresh session,
+//   reads its inputs from disk). This is why truncation/fidelity mode
+//   between nodes doesn't matter: the contract is the filesystem, not the
+//   chat transcript.
+//
+// * RESUMABILITY: every stage has a file-existence guard node
+//   (shape=parallelogram, "check_*") ahead of its work node, following the
+//   proven graph-level self-skip pattern (see attractor's
+//   examples/pipelines/12-graph-resume.dot). The standalone `attractor run`
+//   CLI does NOT auto-resume from engine checkpoints — every invocation
+//   restarts at Start. Resumability here is entirely the file-guard
+//   pattern: delete an artifact to force that stage (and everything
+//   downstream) to re-run; otherwise a re-run after a crash skips
+//   everything already done, cheaply (a single `test -f` per stage).
+//
+// * REVISION LOOP CAP: the human gate's "Request Revision" path increments
+//   a file-based counter ($output_dir/.revision-count) and hard-stops at 3
+//   revisions (deterministic, inspectable — not an LLM-counted loop).
+//
+// * GRAPH-LEVEL retry_target/fallback_retry_target are deliberately LEFT
+//   UNSET. If you set a graph-level retry_target for one stage's retry
+//   needs, it becomes the fallback target for EVERY unrelated node's
+//   unmatched-edge failure across the whole graph — a real footgun. Put
+//   retry_target on the node that needs it (see `synthesis` below).
+//
+// ============================================================================
+
+digraph SimulatedUserResearch {
+    graph [
+        goal="Run a simulated-user-research round against $target_url and produce an implementation-ready spec",
+        label="Simulated User Research",
+        rankdir=LR,
+        default_fidelity="truncate",
+        model_stylesheet="
+            * { llm_model: claude-sonnet-4-6; llm_provider: anthropic; reasoning_effort: medium; }
+            .synthesis { reasoning_effort: high; }
+            .review { reasoning_effort: high; }
+        "
+        // NOTE: no graph-level retry_target/fallback_retry_target — see
+        // header comment. Node-level retry_target is used instead where needed.
+    ]
+
+    // ------------------------------------------------------------------
+    // Required params (pass via `attractor run --param key=value`, every run):
+    //   target_url       -- base URL of the scratch instance to test
+    //   api_key          -- API key/credential personas use to log in
+    //   seed_command     -- full shell command (with its own flags) that
+    //                       seeds/refreshes the scratch instance; must be
+    //                       safely re-runnable (no-op on repeat is fine —
+    //                       the guard below also skips it once seeded)
+    //   personas_dir     -- absolute path to the folder of <name>.md briefs
+    //   output_dir       -- absolute path for all artifacts this round
+    //   app_source_hint  -- comma-separated file/dir path(s) the design
+    //                       reviewers should read (the app's source)
+    //   persona1/2/3     -- bare persona names (no .md); each must have a
+    //                       matching $personas_dir/<name>.md brief file.
+    //                       To change the roster size, copy a persona
+    //                       check+work node pair (see PERSONA SESSIONS
+    //                       below) and rename — DOT graphs are static, so
+    //                       "N personas" means "author N persona nodes for
+    //                       this roster."
+    // ------------------------------------------------------------------
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare,  label="Exit"]
+
+    // ==================================================================
+    // STAGE 1 — SEED (deterministic, resumable)
+    // ==================================================================
+
+    check_seed [
+        shape=parallelogram,
+        label="Seed done?",
+        tool_command="test -f \"${output_dir}/.seed-complete\" && printf done || printf todo"
+    ]
+
+    // Runs the caller-supplied seed command verbatim, then drops a marker
+    // file. If seed_command fails (nonzero exit), the whole && chain fails,
+    // ToolHandler returns FAIL, there is no matching edge for FAIL from this
+    // node (its only outgoing edge is unconditional/success-routed), and no
+    // retry_target is set anywhere reachable from it — the pipeline halts
+    // loudly with the captured stderr tail. This is deliberate: a broken
+    // seeder must not silently let the rest of the round run against a bad
+    // dataset.
+    run_seed [
+        shape=parallelogram,
+        label="Run Seed Command",
+        tool_command="${seed_command} && mkdir -p \"${output_dir}\" && touch \"${output_dir}/.seed-complete\" && printf seeded"
+    ]
+
+    start -> check_seed
+    check_seed -> run_seed     [label="todo", condition="context.tool.last_line=todo"]
+    check_seed -> check_capture [label="skip", condition="context.tool.last_line=done"]
+    run_seed -> check_capture
+
+    // ==================================================================
+    // STAGE 2 — VISUAL CAPTURE (LLM + browser via bash)
+    // ==================================================================
+
+    check_capture [
+        shape=parallelogram,
+        label="Capture done?",
+        tool_command="test -f \"${output_dir}/capture-notes.md\" && printf done || printf todo"
+    ]
+
+    capture_screens [
+        shape=box,
+        class="capture browser",
+        label="Visual Capture",
+        fidelity="truncate",
+        max_agent_turns="40",
+        timeout="1800",
+        allow_partial="true",
+        max_retries="2",
+        prompt="You are conducting the VISUAL CAPTURE stage of a simulated-user-research round for a web product.
+
+Setup:
+- As your very first action, run: agent-browser close --all   (clears any stale browser daemon from a prior crashed run; harmless if nothing was running)
+- Target application: $target_url
+- If the app requires a login/API key to view content, use: $api_key
+- Output directory for artifacts: $output_dir  (create it and $output_dir/screens/ if they do not exist)
+
+Task:
+Walk the application screen-by-screen using the agent-browser CLI via bash (agent-browser open / snapshot -ic / click / fill / scroll / screenshot). Visit every primary screen or route a first-time user would encounter (onboarding, main list/feed, a detail view, settings, any consent/permission screens). For EACH screen, capture it at TWO viewport widths:
+  1. Mobile: agent-browser set viewport 390 844
+  2. Desktop: agent-browser set viewport 1280 900
+
+Save every screenshot into $output_dir/screens/ with descriptive, sequential filenames, e.g. screens/01-onboarding-mobile.png, screens/01-onboarding-desktop.png, screens/02-main-feed-mobile.png. Zero-pad the sequence number.
+
+While you go, keep a running list of anything that looks broken, confusing, or unfinished: layout breaks, overlapping elements, dead taps, missing loading states, text truncation, or anything a real user would notice as a bug. This is NOT a persona simulation — just an honest, first-pass visual and functional walkthrough note.
+
+When finished:
+1. Write $output_dir/capture-notes.md with: a numbered list of every screen you captured (with its screenshot filenames), and a separate 'Observed Issues' section listing anything broken you noticed (screen, what's wrong, severity guess: P1/P2/P3).
+2. Run agent-browser close to end the browser session cleanly — REQUIRED, later stages assume no browser daemon is left running.
+3. Report success once both the screenshots and capture-notes.md exist on disk."
+    ]
+
+    check_capture -> capture_screens [label="todo", condition="context.tool.last_line=todo"]
+    check_capture -> parallel_reviews [label="skip", condition="context.tool.last_line=done"]
+    capture_screens -> parallel_reviews
+
+    // ==================================================================
+    // STAGE 3 — DESIGN REVIEWS (2 LLM nodes, PARALLEL, no browser)
+    // ==================================================================
+    // shape=component fans out to ALL its outgoing edges concurrently.
+    // Each branch is itself guarded (check_review_ia / check_review_responsive)
+    // so a crash-resume skips a review that already completed, while the
+    // OTHER review (if not yet done) still runs. Both branches converge at
+    // the shared tripleoctagon fan-in node below (required — a component
+    // node with no shared convergence node fails loud at validation/runtime).
+
+    parallel_reviews [
+        shape=component,
+        label="Design Reviews (parallel)",
+        join_policy="wait_all",
+        error_policy="continue",
+        max_parallel="2"
+    ]
+
+    check_review_ia [
+        shape=parallelogram,
+        label="IA review done?",
+        tool_command="test -f \"${output_dir}/review-ia.md\" && printf done || printf todo"
+    ]
+
+    review_ia [
+        shape=box,
+        class="review",
+        label="IA & Layout Review",
+        fidelity="truncate",
+        max_agent_turns="15",
+        timeout="900",
+        prompt="You are conducting an INFORMATION ARCHITECTURE & LAYOUT review as part of a simulated-user-research round. You do NOT have or need browser access for this task — work entirely from static artifacts.
+
+Inputs:
+- Screenshots directory: $output_dir/screens/  (read every image in it)
+- Application source: $app_source_hint  (read these file(s)/directories to understand the actual implementation, routing, and component structure — not just what the screenshots show)
+
+Task:
+Evaluate the information architecture and layout of the product: navigation structure, hierarchy/grouping of content, discoverability of key actions, labeling/wording clarity, visual hierarchy (what draws the eye first vs what should), and whether the screen-to-screen flow makes sense for a first-time user. Cross-reference what you see in the screenshots against the actual source to catch discrepancies between intended and shipped behavior.
+
+Output:
+Write your complete findings to $output_dir/review-ia.md with these exact sections:
+  ## Summary (2-3 sentences: overall IA health)
+  ## Navigation & Structure
+  ## Hierarchy & Discoverability
+  ## Labeling & Copy
+  ## Specific Issues Found (numbered; each with screen/file reference, description, severity P1/P2/P3)
+  ## Recommendations (prioritized, concrete)
+
+Report success once review-ia.md is written."
+    ]
+
+    check_review_responsive [
+        shape=parallelogram,
+        label="Responsive review done?",
+        tool_command="test -f \"${output_dir}/review-responsive.md\" && printf done || printf todo"
+    ]
+
+    review_responsive [
+        shape=box,
+        class="review",
+        label="Responsive & Adaptive Review",
+        fidelity="truncate",
+        max_agent_turns="15",
+        timeout="900",
+        prompt="You are conducting a RESPONSIVE & ADAPTIVE DESIGN review as part of a simulated-user-research round. You do NOT have or need browser access for this task — work entirely from static artifacts.
+
+Inputs:
+- Screenshots directory: $output_dir/screens/  (compare the mobile vs desktop screenshot pairs for each screen — filenames are suffixed -mobile / -desktop)
+- Application source: $app_source_hint  (read the CSS/layout code to verify breakpoints, hit-area sizing, and responsive behavior match what the screenshots show)
+
+Task:
+Evaluate how well the product adapts across the two captured viewport widths (mobile ~390px, desktop ~1280px): breakpoint correctness, touch target/hit-area sizing on mobile, text reflow and truncation, layout shifts or broken grids, whether desktop uses the extra space well (vs just a stretched mobile layout), and any input-related issues (e.g. font-size under 16px causing mobile zoom, hover-only affordances with no touch equivalent).
+
+Output:
+Write your complete findings to $output_dir/review-responsive.md with these exact sections:
+  ## Summary (2-3 sentences: overall responsive health)
+  ## Breakpoint Behavior
+  ## Touch/Input Concerns
+  ## Layout Issues by Screen (numbered; each with screen/file reference, mobile vs desktop comparison, severity P1/P2/P3)
+  ## Recommendations (prioritized, concrete)
+
+Report success once review-responsive.md is written."
+    ]
+
+    parallel_reviews -> check_review_ia
+    parallel_reviews -> check_review_responsive
+
+    check_review_ia -> review_ia   [label="todo", condition="context.tool.last_line=todo"]
+    check_review_ia -> reviews_fan_in [label="skip", condition="context.tool.last_line=done"]
+    review_ia -> reviews_fan_in
+
+    check_review_responsive -> review_responsive [label="todo", condition="context.tool.last_line=todo"]
+    check_review_responsive -> reviews_fan_in [label="skip", condition="context.tool.last_line=done"]
+    review_responsive -> reviews_fan_in
+
+    reviews_fan_in [shape=tripleoctagon, label="Reviews Collected"]
+
+    // ==================================================================
+    // STAGE 4 — PERSONA SESSIONS (LLM + browser, STRICTLY SEQUENTIAL)
+    // ==================================================================
+    // A plain linear chain — NOT wrapped in shape=component — so the
+    // engine's single-threaded top-level traversal is what guarantees
+    // exactly one browser daemon runs at a time. To add/remove personas,
+    // copy a check_personaN + personaN pair, renumber, and splice into
+    // the chain (update the edge before and after it).
+
+    reviews_fan_in -> check_persona1
+
+    check_persona1 [
+        shape=parallelogram,
+        label="Persona 1 done?",
+        tool_command="test -f \"${output_dir}/persona-${persona1}.md\" && printf done || printf todo"
+    ]
+
+    persona1 [
+        shape=box,
+        class="persona browser",
+        label="Persona Session 1",
+        fidelity="truncate",
+        max_agent_turns="40",
+        timeout="1800",
+        allow_partial="true",
+        max_retries="1",
+        prompt="You are conducting a PERSONA SESSION as part of a simulated-user-research round. You embody ONE persona doing a TRUE first-run of the product in a real browser — this is NOT a review of screenshots, you must actually drive the app live via the agent-browser CLI.
+
+Setup:
+1. As your first action, run: agent-browser close --all  (clears any stale browser daemon; harmless if none running — REQUIRED, since persona sessions run one at a time and must never overlap another session's browser state)
+2. Read your persona brief completely: $personas_dir/$persona1.md — this defines who you are, your goals, your technical comfort level, and what would make you say yes or no to this product. Adopt this persona fully for the rest of the session; do not break character in your actions or your written log.
+3. Open a brand-new, logged-out browser session (do not reuse any saved cookies/state): agent-browser open $target_url
+4. If the product requires an account/API key to proceed past onboarding, use: $api_key — exactly as your persona would encounter it (only when the product's own flow asks for it, not before, if your persona is doing a genuine first run).
+
+Task:
+Act as this persona doing REAL first-run onboarding and the concrete tasks described in your brief. Read what's on screen the way a real person would — don't just execute the minimum clicks to finish. Notice friction: confusing copy, unclear next steps, dead taps, missing feedback, anything that would make a real user hesitate, get lost, or quit. Also notice delights: anything that clearly worked well or exceeded expectations.
+
+When finished, close your browser: agent-browser close
+
+Output:
+Write your complete friction log to $output_dir/persona-$persona1.md with these exact sections:
+  ## Persona
+  (name, one-line description from the brief)
+  ## Friction Log
+  (chronological; each entry: what you tried, what happened, severity P1 blocking / P2 annoying / P3 minor)
+  ## Verbatim Confusions
+  (direct quotes of anything you — in character — would have said out loud in confusion)
+  ## Delights
+  (anything that worked well)
+  ## One Change
+  (the SINGLE change that would most improve your experience)
+  ## Verdict
+  (would you adopt/continue using this product? yes/no/maybe, one paragraph why)
+  ## Bug Table
+  (markdown table: | Screen | Issue | Severity | Reproducible steps |)
+
+Report success once persona-$persona1.md is written."
+    ]
+
+    check_persona1 -> persona1 [label="todo", condition="context.tool.last_line=todo"]
+    check_persona1 -> check_persona2 [label="skip", condition="context.tool.last_line=done"]
+    persona1 -> check_persona2
+
+    check_persona2 [
+        shape=parallelogram,
+        label="Persona 2 done?",
+        tool_command="test -f \"${output_dir}/persona-${persona2}.md\" && printf done || printf todo"
+    ]
+
+    persona2 [
+        shape=box,
+        class="persona browser",
+        label="Persona Session 2",
+        fidelity="truncate",
+        max_agent_turns="40",
+        timeout="1800",
+        allow_partial="true",
+        max_retries="1",
+        prompt="You are conducting a PERSONA SESSION as part of a simulated-user-research round. You embody ONE persona doing a TRUE first-run of the product in a real browser — this is NOT a review of screenshots, you must actually drive the app live via the agent-browser CLI.
+
+Setup:
+1. As your first action, run: agent-browser close --all  (clears any stale browser daemon; harmless if none running — REQUIRED, since persona sessions run one at a time and must never overlap another session's browser state)
+2. Read your persona brief completely: $personas_dir/$persona2.md — this defines who you are, your goals, your technical comfort level, and what would make you say yes or no to this product. Adopt this persona fully for the rest of the session; do not break character in your actions or your written log.
+3. Open a brand-new, logged-out browser session (do not reuse any saved cookies/state): agent-browser open $target_url
+4. If the product requires an account/API key to proceed past onboarding, use: $api_key — exactly as your persona would encounter it (only when the product's own flow asks for it, not before, if your persona is doing a genuine first run).
+
+Task:
+Act as this persona doing REAL first-run onboarding and the concrete tasks described in your brief. Read what's on screen the way a real person would — don't just execute the minimum clicks to finish. Notice friction: confusing copy, unclear next steps, dead taps, missing feedback, anything that would make a real user hesitate, get lost, or quit. Also notice delights: anything that clearly worked well or exceeded expectations.
+
+When finished, close your browser: agent-browser close
+
+Output:
+Write your complete friction log to $output_dir/persona-$persona2.md with these exact sections:
+  ## Persona
+  (name, one-line description from the brief)
+  ## Friction Log
+  (chronological; each entry: what you tried, what happened, severity P1 blocking / P2 annoying / P3 minor)
+  ## Verbatim Confusions
+  (direct quotes of anything you — in character — would have said out loud in confusion)
+  ## Delights
+  (anything that worked well)
+  ## One Change
+  (the SINGLE change that would most improve your experience)
+  ## Verdict
+  (would you adopt/continue using this product? yes/no/maybe, one paragraph why)
+  ## Bug Table
+  (markdown table: | Screen | Issue | Severity | Reproducible steps |)
+
+Report success once persona-$persona2.md is written."
+    ]
+
+    check_persona2 -> persona2 [label="todo", condition="context.tool.last_line=todo"]
+    check_persona2 -> check_persona3 [label="skip", condition="context.tool.last_line=done"]
+    persona2 -> check_persona3
+
+    check_persona3 [
+        shape=parallelogram,
+        label="Persona 3 done?",
+        tool_command="test -f \"${output_dir}/persona-${persona3}.md\" && printf done || printf todo"
+    ]
+
+    persona3 [
+        shape=box,
+        class="persona browser",
+        label="Persona Session 3",
+        fidelity="truncate",
+        max_agent_turns="40",
+        timeout="1800",
+        allow_partial="true",
+        max_retries="1",
+        prompt="You are conducting a PERSONA SESSION as part of a simulated-user-research round. You embody ONE persona doing a TRUE first-run of the product in a real browser — this is NOT a review of screenshots, you must actually drive the app live via the agent-browser CLI.
+
+Setup:
+1. As your first action, run: agent-browser close --all  (clears any stale browser daemon; harmless if none running — REQUIRED, since persona sessions run one at a time and must never overlap another session's browser state)
+2. Read your persona brief completely: $personas_dir/$persona3.md — this defines who you are, your goals, your technical comfort level, and what would make you say yes or no to this product. Adopt this persona fully for the rest of the session; do not break character in your actions or your written log.
+3. Open a brand-new, logged-out browser session (do not reuse any saved cookies/state): agent-browser open $target_url
+4. If the product requires an account/API key to proceed past onboarding, use: $api_key — exactly as your persona would encounter it (only when the product's own flow asks for it, not before, if your persona is doing a genuine first run).
+
+Task:
+Act as this persona doing REAL first-run onboarding and the concrete tasks described in your brief. Read what's on screen the way a real person would — don't just execute the minimum clicks to finish. Notice friction: confusing copy, unclear next steps, dead taps, missing feedback, anything that would make a real user hesitate, get lost, or quit. Also notice delights: anything that clearly worked well or exceeded expectations.
+
+When finished, close your browser: agent-browser close
+
+Output:
+Write your complete friction log to $output_dir/persona-$persona3.md with these exact sections:
+  ## Persona
+  (name, one-line description from the brief)
+  ## Friction Log
+  (chronological; each entry: what you tried, what happened, severity P1 blocking / P2 annoying / P3 minor)
+  ## Verbatim Confusions
+  (direct quotes of anything you — in character — would have said out loud in confusion)
+  ## Delights
+  (anything that worked well)
+  ## One Change
+  (the SINGLE change that would most improve your experience)
+  ## Verdict
+  (would you adopt/continue using this product? yes/no/maybe, one paragraph why)
+  ## Bug Table
+  (markdown table: | Screen | Issue | Severity | Reproducible steps |)
+
+Report success once persona-$persona3.md is written."
+    ]
+
+    check_persona3 -> persona3 [label="todo", condition="context.tool.last_line=todo"]
+    check_persona3 -> check_synthesis [label="skip", condition="context.tool.last_line=done"]
+    persona3 -> check_synthesis
+
+    // ==================================================================
+    // STAGE 5 — SYNTHESIS
+    // ==================================================================
+    // check_synthesis only guards the MAIN-LINE entry into synthesis (the
+    // first pass after crash-resume). The human-requested revision loop
+    // (gate_feedback -> synthesis, below) bypasses this guard entirely and
+    // always re-runs synthesis — that is deliberate; a revision must
+    // overwrite research-spec.md, not skip because it already exists.
+
+    check_synthesis [
+        shape=parallelogram,
+        label="Spec exists?",
+        tool_command="test -f \"${output_dir}/research-spec.md\" && printf done || printf todo"
+    ]
+
+    synthesis [
+        shape=box,
+        class="synthesis",
+        label="Synthesis",
+        fidelity="truncate",
+        max_agent_turns="20",
+        timeout="900",
+        goal_gate=true,
+        retry_target="synthesis",
+        max_retries="2",
+        prompt="You are conducting the SYNTHESIS stage of a simulated-user-research round — the final consolidation before human review.
+
+Read EVERY artifact in $output_dir:
+  - $output_dir/capture-notes.md
+  - $output_dir/review-ia.md
+  - $output_dir/review-responsive.md
+  - $output_dir/persona-$persona1.md
+  - $output_dir/persona-$persona2.md
+  - $output_dir/persona-$persona3.md
+  - (if present from a prior revision pass) $output_dir/research-spec.md — if this file already exists, treat your prior version as a DRAFT to revise, not a blank slate. If a human provided feedback in this turn (it will appear above this prompt as 'Human response at gate ...'), that feedback is the primary driver of what to change — read it carefully and apply it.
+
+Task:
+Consolidate all findings into a SINGLE implementation-ready spec. Cross-reference across artifacts: a bug or friction point independently observed by MULTIPLE personas or BOTH design reviews is a P1 — call this out explicitly as 'cross-persona confirmed' or 'confirmed by N/3 personas'. Do not simply concatenate the source documents — synthesize, deduplicate, and prioritize.
+
+Output:
+Write (or overwrite, on a revision pass) $output_dir/research-spec.md with these exact sections:
+  ## Summary
+  (3-5 sentences: overall health, biggest risk, biggest opportunity)
+  ## P1 Bugs (cross-persona/cross-review confirmed)
+  (numbered; each with description, which personas/reviews confirmed it, suggested fix)
+  ## Prioritized Changes
+  (ranked list, most important first; each with rationale tied back to specific evidence)
+  ## Copy Fixes
+  (specific text changes: current wording -> suggested wording, with the reason)
+  ## Parked Items
+  (real issues that are lower priority or out of scope for this round — do not lose them, just don't block on them)
+  ## Sources
+  (list every artifact you read, so a human can trace any claim back to its evidence)
+
+Report success once research-spec.md is written."
+    ]
+
+    check_synthesis -> synthesis [label="todo", condition="context.tool.last_line=todo"]
+    check_synthesis -> gate [label="skip", condition="context.tool.last_line=done"]
+    synthesis -> gate
+
+    // ==================================================================
+    // STAGE 6 — HUMAN GATE (approve / revise, capped / end)
+    // ==================================================================
+
+    gate [
+        shape=hexagon,
+        label="Approve, Revise, or End?",
+        description="Research round complete. Review the consolidated spec below and choose how to proceed.",
+        attachments_inline="$output_dir/research-spec.md"
+    ]
+
+    gate -> exit [label="[A] Approve the spec"]
+    gate -> check_revision_cap [label="[R] Request a revision pass"]
+    gate -> exit [label="[E] End without approving"]
+
+    // File-based counter — deterministic and inspectable, not LLM-counted.
+    // Caps the synthesis<->gate loop at 3 revisions so it cannot run away.
+    check_revision_cap [
+        shape=parallelogram,
+        label="Revision cap check (max 3)",
+        tool_command="cnt=$(cat \"${output_dir}/.revision-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.revision-count\"; if [ \"$cnt\" -gt 3 ]; then printf cap_reached; else printf ok; fi"
+    ]
+
+    check_revision_cap -> revision_cap_reached [label="cap reached", condition="context.tool.last_line=cap_reached"]
+    check_revision_cap -> gate_feedback [label="ok", condition="context.tool.last_line=ok"]
+
+    revision_cap_reached [
+        shape=parallelogram,
+        label="Revision Cap Reached",
+        tool_command="printf '\\n\\n---\\n**Note:** revision cap (3) reached; spec finalized as-is at this round.\\n' >> \"${output_dir}/research-spec.md\" && printf done"
+    ]
+    revision_cap_reached -> exit
+
+    gate_feedback [
+        shape=hexagon,
+        mode="freeform",
+        label="What should change in the spec?",
+        description="Describe what needs to change. Your feedback is passed directly to the synthesis re-run."
+    ]
+
+    // No guard here by design — a revision must always re-run synthesis.
+    // The human's freeform text is auto-injected as a "Human response at
+    // gate ..." preface on synthesis's next prompt by the engine (see
+    // gotchas: consume-once human.gate.text injection).
+    gate_feedback -> synthesis
+}
