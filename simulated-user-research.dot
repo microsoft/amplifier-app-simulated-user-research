@@ -141,7 +141,7 @@ digraph SimulatedUserResearch {
     check_capture [
         shape=parallelogram,
         label="Capture done?",
-        tool_command="test -f \"${output_dir}/capture-notes.md\" && printf done || printf todo"
+        tool_command="if [ -f \"${output_dir}/capture-notes.md\" ] && [ $(wc -c < \"${output_dir}/capture-notes.md\") -ge 800 ]; then printf done; else printf todo; fi"
     ]
 
     // Turn/timeout budget: manual capture sessions (22 screenshots x 2
@@ -167,12 +167,20 @@ digraph SimulatedUserResearch {
         max_retries="2",
         prompt="You are conducting the VISUAL CAPTURE stage of a simulated-user-research round for a web product.
 
+IMPORTANT — how your session ends: replying with text and no tool call ENDS your session immediately, right there, with whatever you've done so far as the final state. Never narrate an intention ('let me write the notes now', 'now I have everything I need to...') as a text-only reply — that sentence IS your last action if you don't pair it with a tool call in the SAME turn. Until capture-notes.md exists on disk AND you have verified it with a real `wc -c` check, every single reply you send must contain a tool call. If you notice yourself about to write a sentence describing what you're about to do, stop and issue the tool call instead — do it, don't announce it.
+
 Setup:
 - As your very first action, run: agent-browser close --all   (clears any stale browser daemon from a prior crashed run; harmless if nothing was running)
 - Target application: $target_url
 - If the app requires a login/API key to view content, use: $api_key
 - Output directory for artifacts: $output_dir  (create it and $output_dir/screens/ if they do not exist)
 - If $output_dir/capture-notes.md already exists with partial content from a prior truncated attempt, treat it as a partial draft: read it, check $output_dir/screens/ for which screens are already captured, and continue from where that attempt left off rather than starting over from scratch.
+- If $output_dir/capture-notes.md does NOT exist yet, create it right now, before opening the browser, with the section skeleton below populated with placeholder text ('(in progress)'). This is a structural step, not optional: it guarantees a resumable file exists from turn one, before any browsing happens.
+
+  ## Screens Captured
+  (in progress)
+  ## Observed Issues
+  (in progress)
 
 Task:
 Walk the application screen-by-screen using the agent-browser CLI via bash (agent-browser open / snapshot -ic / click / fill / scroll / screenshot). Visit every primary screen or route a first-time user would encounter (onboarding, main list/feed, a detail view, settings, any consent/permission screens). For EACH screen, capture it at TWO viewport widths:
@@ -183,12 +191,12 @@ Save every screenshot into $output_dir/screens/ with descriptive, sequential fil
 
 While you go, keep a running list of anything that looks broken, confusing, or unfinished: layout breaks, overlapping elements, dead taps, missing loading states, text truncation, or anything a real user would notice as a bug. This is NOT a persona simulation — just an honest, first-pass visual and functional walkthrough note.
 
-IMPORTANT — write incrementally, do not save the write for your last turn: after every 3-4 screens, append what you have so far to $output_dir/capture-notes.md (create it on the first pass) so a truncated session still leaves a usable partial record instead of nothing. Do not treat the write as a final step to do once all screens are captured.
+IMPORTANT — write incrementally, do not save the write for your last turn: after every 3-4 screens, APPEND what you have so far to $output_dir/capture-notes.md (replacing the placeholder text the first time) so a truncated session still leaves a usable partial record instead of nothing. Do not treat the write as a final step to do once all screens are captured. The skeleton alone does not satisfy the contract — the file must be substantive (real screen entries and real observed issues, not placeholders) before you finish.
 
 When finished:
-1. Ensure $output_dir/capture-notes.md is complete and accurate: a numbered list of every screen you captured (with its screenshot filenames), and a separate 'Observed Issues' section listing anything broken you noticed (screen, what's wrong, severity guess: P1/P2/P3).
+1. Ensure $output_dir/capture-notes.md is complete and accurate: a numbered list of every screen you captured (with its screenshot filenames), and a separate 'Observed Issues' section listing anything broken you noticed (screen, what's wrong, severity guess: P1/P2/P3). Placeholders must be gone.
 2. Run agent-browser close to end the browser session cleanly — REQUIRED, later stages assume no browser daemon is left running.
-3. Report success once both the screenshots and capture-notes.md exist on disk."
+3. Verify your own work with a tool call before reporting anything: run `wc -c $output_dir/capture-notes.md` and confirm it is at least 800 bytes. Only after seeing that confirmed should you report success (via report_outcome if available, else a brief final text summary) — never report success in the same breath as your last content write without that verification call in between."
     ]
 
     check_capture -> capture_screens [label="todo", condition="context.tool.last_line=todo"]
@@ -219,7 +227,7 @@ When finished:
     verify_capture [
         shape=parallelogram,
         label="Capture artifact verified?",
-        tool_command="if [ -f \"${output_dir}/capture-notes.md\" ]; then rm -f \"${output_dir}/.capture-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.capture-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.capture-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
+        tool_command="if [ -f \"${output_dir}/capture-notes.md\" ] && [ $(wc -c < \"${output_dir}/capture-notes.md\") -ge 800 ]; then rm -f \"${output_dir}/.capture-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.capture-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.capture-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
     ]
 
     verify_capture -> parallel_reviews  [label="ok",        condition="context.tool.last_line=ok"]
@@ -253,7 +261,7 @@ When finished:
     check_review_ia [
         shape=parallelogram,
         label="IA review done?",
-        tool_command="test -f \"${output_dir}/review-ia.md\" && printf done || printf todo"
+        tool_command="if [ -f \"${output_dir}/review-ia.md\" ] && [ $(wc -c < \"${output_dir}/review-ia.md\") -ge 1500 ]; then printf done; else printf todo; fi"
     ]
 
     review_ia [
@@ -264,6 +272,8 @@ When finished:
         max_agent_turns="15",
         timeout="900",
         prompt="You are conducting an INFORMATION ARCHITECTURE & LAYOUT review as part of a simulated-user-research round. You do NOT have or need browser access for this task — work entirely from static artifacts.
+
+IMPORTANT — how your session ends: replying with text and no tool call ENDS your session immediately. Never narrate an intention ('let me write the review now') as a text-only reply — call the tool in that same turn instead. Until review-ia.md is written and verified, every reply must contain a tool call.
 
 Inputs:
 - Screenshots directory: $output_dir/screens/  (read every image in it)
@@ -281,7 +291,9 @@ Write your complete findings to $output_dir/review-ia.md with these exact sectio
   ## Specific Issues Found (numbered; each with screen/file reference, description, severity P1/P2/P3)
   ## Recommendations (prioritized, concrete)
 
-Report success once review-ia.md is written."
+The review must be substantive and complete before you finish — a bare section skeleton with no real findings does not satisfy this task.
+
+Before reporting anything, verify your own work with a tool call: run `wc -c $output_dir/review-ia.md` and confirm it is at least 1500 bytes. Only after seeing that confirmed should you report success (via report_outcome if available, else a brief final text summary)."
     ]
 
     // DEFECT 2 fix, review branch: same file-ground-truth verify pattern as
@@ -304,7 +316,7 @@ Report success once review-ia.md is written."
     verify_review_ia [
         shape=parallelogram,
         label="IA review artifact verified?",
-        tool_command="if [ -f \"${output_dir}/review-ia.md\" ]; then rm -f \"${output_dir}/.review-ia-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.review-ia-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.review-ia-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
+        tool_command="if [ -f \"${output_dir}/review-ia.md\" ] && [ $(wc -c < \"${output_dir}/review-ia.md\") -ge 1500 ]; then rm -f \"${output_dir}/.review-ia-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.review-ia-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.review-ia-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
     ]
 
     verify_review_ia -> reviews_fan_in     [label="ok",       condition="context.tool.last_line=ok"]
@@ -324,7 +336,7 @@ Report success once review-ia.md is written."
     check_review_responsive [
         shape=parallelogram,
         label="Responsive review done?",
-        tool_command="test -f \"${output_dir}/review-responsive.md\" && printf done || printf todo"
+        tool_command="if [ -f \"${output_dir}/review-responsive.md\" ] && [ $(wc -c < \"${output_dir}/review-responsive.md\") -ge 1500 ]; then printf done; else printf todo; fi"
     ]
 
     review_responsive [
@@ -335,6 +347,8 @@ Report success once review-ia.md is written."
         max_agent_turns="15",
         timeout="900",
         prompt="You are conducting a RESPONSIVE & ADAPTIVE DESIGN review as part of a simulated-user-research round. You do NOT have or need browser access for this task — work entirely from static artifacts.
+
+IMPORTANT — how your session ends: replying with text and no tool call ENDS your session immediately. Never narrate an intention ('let me write the review now') as a text-only reply — call the tool in that same turn instead. Until review-responsive.md is written and verified, every reply must contain a tool call.
 
 Inputs:
 - Screenshots directory: $output_dir/screens/  (compare the mobile vs desktop screenshot pairs for each screen — filenames are suffixed -mobile / -desktop)
@@ -351,14 +365,16 @@ Write your complete findings to $output_dir/review-responsive.md with these exac
   ## Layout Issues by Screen (numbered; each with screen/file reference, mobile vs desktop comparison, severity P1/P2/P3)
   ## Recommendations (prioritized, concrete)
 
-Report success once review-responsive.md is written."
+The review must be substantive and complete before you finish — a bare section skeleton with no real findings does not satisfy this task.
+
+Before reporting anything, verify your own work with a tool call: run `wc -c $output_dir/review-responsive.md` and confirm it is at least 1500 bytes. Only after seeing that confirmed should you report success (via report_outcome if available, else a brief final text summary)."
     ]
 
     // Same file-ground-truth verify pattern as verify_review_ia above.
     verify_review_responsive [
         shape=parallelogram,
         label="Responsive review artifact verified?",
-        tool_command="if [ -f \"${output_dir}/review-responsive.md\" ]; then rm -f \"${output_dir}/.review-responsive-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.review-responsive-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.review-responsive-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
+        tool_command="if [ -f \"${output_dir}/review-responsive.md\" ] && [ $(wc -c < \"${output_dir}/review-responsive.md\") -ge 1500 ]; then rm -f \"${output_dir}/.review-responsive-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.review-responsive-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.review-responsive-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
     ]
 
     verify_review_responsive -> reviews_fan_in       [label="ok",        condition="context.tool.last_line=ok"]
@@ -398,7 +414,7 @@ Report success once review-responsive.md is written."
     check_persona1 [
         shape=parallelogram,
         label="Persona 1 done?",
-        tool_command="test -f \"${output_dir}/persona-${persona1}.md\" && printf done || printf todo"
+        tool_command="if [ -f \"${output_dir}/persona-${persona1}.md\" ] && [ $(wc -c < \"${output_dir}/persona-${persona1}.md\") -ge 1500 ]; then printf done; else printf todo; fi"
     ]
 
     // Turn/timeout budget: manual persona sessions ran 73-97 agent turns
@@ -424,17 +440,20 @@ Report success once review-responsive.md is written."
         max_retries="1",
         prompt="You are conducting a PERSONA SESSION as part of a simulated-user-research round. You embody ONE persona doing a TRUE first-run of the product in a real browser — this is NOT a review of screenshots, you must actually drive the app live via the agent-browser CLI.
 
+IMPORTANT — how your session ends: replying with text and no tool call ENDS your session immediately, right there, with whatever you've done so far as the final state. Never narrate an intention ('let me write the report now', 'now I have everything I need to write a comprehensive persona research...') as a text-only reply — that sentence IS your last action if you don't pair it with a tool call in the SAME turn. Until your output file is written and verified, every single reply you send must contain a tool call. If you notice yourself about to write a sentence describing what you're about to do, stop and issue the tool call instead — do it, don't announce it.
+
 Setup:
 1. As your first action, run: agent-browser close --all  (clears any stale browser daemon; harmless if none running — REQUIRED, since persona sessions run one at a time and must never overlap another session's browser state)
 2. Read your persona brief completely: $personas_dir/$persona1.md — this defines who you are, your goals, your technical comfort level, and what would make you say yes or no to this product. Adopt this persona fully for the rest of the session; do not break character in your actions or your written log.
 3. If $output_dir/persona-$persona1.md already exists from a prior truncated attempt, treat it as an incomplete draft: read it to see how far you got, then continue/redo the remaining tasks rather than starting completely over.
-4. Open a brand-new, logged-out browser session (do not reuse any saved cookies/state): agent-browser open $target_url
-5. If the product requires an account/API key to proceed past onboarding, use: $api_key — exactly as your persona would encounter it (only when the product's own flow asks for it, not before, if your persona is doing a genuine first run).
+4. If $output_dir/persona-$persona1.md does NOT exist yet, create it right now, immediately after reading the brief and BEFORE opening the browser, with the full section skeleton below populated with placeholder text ('(in progress)') in each section. This is a structural step, not optional: it guarantees a resumable file exists from turn one, before any browsing happens.
+5. Open a brand-new, logged-out browser session (do not reuse any saved cookies/state): agent-browser open $target_url
+6. If the product requires an account/API key to proceed past onboarding, use: $api_key — exactly as your persona would encounter it (only when the product's own flow asks for it, not before, if your persona is doing a genuine first run).
 
 Task:
 Act as this persona doing REAL first-run onboarding and the concrete tasks described in your brief. Read what's on screen the way a real person would — don't just execute the minimum clicks to finish. Notice friction: confusing copy, unclear next steps, dead taps, missing feedback, anything that would make a real user hesitate, get lost, or quit. Also notice delights: anything that clearly worked well or exceeded expectations.
 
-IMPORTANT — budget your turns, do not leave the write for the very end: plan on roughly 25% of your turn budget going to WRITING the report, not just doing tasks. Write $output_dir/persona-$persona1.md incrementally as sections become ready (e.g. write ## Persona and start ## Friction Log as soon as onboarding is done, append entries as you complete each task) rather than composing the whole document from memory in your final turn. A partial-but-saved file is far more useful than a complete draft that never got written because turns ran out.
+IMPORTANT — budget your turns, do not leave the write for the very end: plan on roughly 25% of your turn budget going to WRITING the report, not just doing tasks. APPEND your completed observations to $output_dir/persona-$persona1.md after EACH task (replacing placeholder text the first time you fill a section) — do not wait until you feel 'done' to write. A partial-but-saved file is far more useful than a complete draft that never got written because turns ran out. The skeleton alone does not count as a finished report — every section must be completed with real content before you finish.
 
 When finished, close your browser: agent-browser close
 
@@ -455,7 +474,7 @@ Write your complete friction log to $output_dir/persona-$persona1.md with these 
   ## Bug Table
   (markdown table: | Screen | Issue | Severity | Reproducible steps |)
 
-Report success once persona-$persona1.md is written."
+Before reporting anything, verify your own work with a tool call: run `wc -c $output_dir/persona-$persona1.md` and confirm it is at least 1500 bytes with all placeholders replaced by real content. Only after seeing that confirmed should you report success (via report_outcome if available, else a brief final text summary) — never report success in the same breath as your last content write without that verification call in between."
     ]
 
     check_persona1 -> persona1 [label="todo", condition="context.tool.last_line=todo"]
@@ -473,7 +492,7 @@ Report success once persona-$persona1.md is written."
     verify_persona1 [
         shape=parallelogram,
         label="Persona 1 artifact verified?",
-        tool_command="if [ -f \"${output_dir}/persona-${persona1}.md\" ]; then rm -f \"${output_dir}/.persona1-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.persona1-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.persona1-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
+        tool_command="if [ -f \"${output_dir}/persona-${persona1}.md\" ] && [ $(wc -c < \"${output_dir}/persona-${persona1}.md\") -ge 1500 ]; then rm -f \"${output_dir}/.persona1-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.persona1-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.persona1-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
     ]
 
     verify_persona1 -> check_persona2   [label="ok",       condition="context.tool.last_line=ok"]
@@ -489,7 +508,7 @@ Report success once persona-$persona1.md is written."
     check_persona2 [
         shape=parallelogram,
         label="Persona 2 done?",
-        tool_command="test -f \"${output_dir}/persona-${persona2}.md\" && printf done || printf todo"
+        tool_command="if [ -f \"${output_dir}/persona-${persona2}.md\" ] && [ $(wc -c < \"${output_dir}/persona-${persona2}.md\") -ge 1500 ]; then printf done; else printf todo; fi"
     ]
 
     persona2 [
@@ -503,17 +522,20 @@ Report success once persona-$persona1.md is written."
         max_retries="1",
         prompt="You are conducting a PERSONA SESSION as part of a simulated-user-research round. You embody ONE persona doing a TRUE first-run of the product in a real browser — this is NOT a review of screenshots, you must actually drive the app live via the agent-browser CLI.
 
+IMPORTANT — how your session ends: replying with text and no tool call ENDS your session immediately, right there, with whatever you've done so far as the final state. Never narrate an intention ('let me write the report now', 'now I have everything I need to write a comprehensive persona research...') as a text-only reply — that sentence IS your last action if you don't pair it with a tool call in the SAME turn. Until your output file is written and verified, every single reply you send must contain a tool call. If you notice yourself about to write a sentence describing what you're about to do, stop and issue the tool call instead — do it, don't announce it.
+
 Setup:
 1. As your first action, run: agent-browser close --all  (clears any stale browser daemon; harmless if none running — REQUIRED, since persona sessions run one at a time and must never overlap another session's browser state)
 2. Read your persona brief completely: $personas_dir/$persona2.md — this defines who you are, your goals, your technical comfort level, and what would make you say yes or no to this product. Adopt this persona fully for the rest of the session; do not break character in your actions or your written log.
 3. If $output_dir/persona-$persona2.md already exists from a prior truncated attempt, treat it as an incomplete draft: read it to see how far you got, then continue/redo the remaining tasks rather than starting completely over.
-4. Open a brand-new, logged-out browser session (do not reuse any saved cookies/state): agent-browser open $target_url
-5. If the product requires an account/API key to proceed past onboarding, use: $api_key — exactly as your persona would encounter it (only when the product's own flow asks for it, not before, if your persona is doing a genuine first run).
+4. If $output_dir/persona-$persona2.md does NOT exist yet, create it right now, immediately after reading the brief and BEFORE opening the browser, with the full section skeleton below populated with placeholder text ('(in progress)') in each section. This is a structural step, not optional: it guarantees a resumable file exists from turn one, before any browsing happens.
+5. Open a brand-new, logged-out browser session (do not reuse any saved cookies/state): agent-browser open $target_url
+6. If the product requires an account/API key to proceed past onboarding, use: $api_key — exactly as your persona would encounter it (only when the product's own flow asks for it, not before, if your persona is doing a genuine first run).
 
 Task:
 Act as this persona doing REAL first-run onboarding and the concrete tasks described in your brief. Read what's on screen the way a real person would — don't just execute the minimum clicks to finish. Notice friction: confusing copy, unclear next steps, dead taps, missing feedback, anything that would make a real user hesitate, get lost, or quit. Also notice delights: anything that clearly worked well or exceeded expectations.
 
-IMPORTANT — budget your turns, do not leave the write for the very end: plan on roughly 25% of your turn budget going to WRITING the report, not just doing tasks. Write $output_dir/persona-$persona2.md incrementally as sections become ready (e.g. write ## Persona and start ## Friction Log as soon as onboarding is done, append entries as you complete each task) rather than composing the whole document from memory in your final turn. A partial-but-saved file is far more useful than a complete draft that never got written because turns ran out.
+IMPORTANT — budget your turns, do not leave the write for the very end: plan on roughly 25% of your turn budget going to WRITING the report, not just doing tasks. APPEND your completed observations to $output_dir/persona-$persona2.md after EACH task (replacing placeholder text the first time you fill a section) — do not wait until you feel 'done' to write. A partial-but-saved file is far more useful than a complete draft that never got written because turns ran out. The skeleton alone does not count as a finished report — every section must be completed with real content before you finish.
 
 When finished, close your browser: agent-browser close
 
@@ -534,7 +556,7 @@ Write your complete friction log to $output_dir/persona-$persona2.md with these 
   ## Bug Table
   (markdown table: | Screen | Issue | Severity | Reproducible steps |)
 
-Report success once persona-$persona2.md is written."
+Before reporting anything, verify your own work with a tool call: run `wc -c $output_dir/persona-$persona2.md` and confirm it is at least 1500 bytes with all placeholders replaced by real content. Only after seeing that confirmed should you report success (via report_outcome if available, else a brief final text summary) — never report success in the same breath as your last content write without that verification call in between."
     ]
 
     check_persona2 -> persona2 [label="todo", condition="context.tool.last_line=todo"]
@@ -544,7 +566,7 @@ Report success once persona-$persona2.md is written."
     verify_persona2 [
         shape=parallelogram,
         label="Persona 2 artifact verified?",
-        tool_command="if [ -f \"${output_dir}/persona-${persona2}.md\" ]; then rm -f \"${output_dir}/.persona2-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.persona2-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.persona2-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
+        tool_command="if [ -f \"${output_dir}/persona-${persona2}.md\" ] && [ $(wc -c < \"${output_dir}/persona-${persona2}.md\") -ge 1500 ]; then rm -f \"${output_dir}/.persona2-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.persona2-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.persona2-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
     ]
 
     verify_persona2 -> check_persona3   [label="ok",       condition="context.tool.last_line=ok"]
@@ -560,7 +582,7 @@ Report success once persona-$persona2.md is written."
     check_persona3 [
         shape=parallelogram,
         label="Persona 3 done?",
-        tool_command="test -f \"${output_dir}/persona-${persona3}.md\" && printf done || printf todo"
+        tool_command="if [ -f \"${output_dir}/persona-${persona3}.md\" ] && [ $(wc -c < \"${output_dir}/persona-${persona3}.md\") -ge 1500 ]; then printf done; else printf todo; fi"
     ]
 
     persona3 [
@@ -574,17 +596,20 @@ Report success once persona-$persona2.md is written."
         max_retries="1",
         prompt="You are conducting a PERSONA SESSION as part of a simulated-user-research round. You embody ONE persona doing a TRUE first-run of the product in a real browser — this is NOT a review of screenshots, you must actually drive the app live via the agent-browser CLI.
 
+IMPORTANT — how your session ends: replying with text and no tool call ENDS your session immediately, right there, with whatever you've done so far as the final state. Never narrate an intention ('let me write the report now', 'now I have everything I need to write a comprehensive persona research...') as a text-only reply — that sentence IS your last action if you don't pair it with a tool call in the SAME turn. Until your output file is written and verified, every single reply you send must contain a tool call. If you notice yourself about to write a sentence describing what you're about to do, stop and issue the tool call instead — do it, don't announce it.
+
 Setup:
 1. As your first action, run: agent-browser close --all  (clears any stale browser daemon; harmless if none running — REQUIRED, since persona sessions run one at a time and must never overlap another session's browser state)
 2. Read your persona brief completely: $personas_dir/$persona3.md — this defines who you are, your goals, your technical comfort level, and what would make you say yes or no to this product. Adopt this persona fully for the rest of the session; do not break character in your actions or your written log.
 3. If $output_dir/persona-$persona3.md already exists from a prior truncated attempt, treat it as an incomplete draft: read it to see how far you got, then continue/redo the remaining tasks rather than starting completely over.
-4. Open a brand-new, logged-out browser session (do not reuse any saved cookies/state): agent-browser open $target_url
-5. If the product requires an account/API key to proceed past onboarding, use: $api_key — exactly as your persona would encounter it (only when the product's own flow asks for it, not before, if your persona is doing a genuine first run).
+4. If $output_dir/persona-$persona3.md does NOT exist yet, create it right now, immediately after reading the brief and BEFORE opening the browser, with the full section skeleton below populated with placeholder text ('(in progress)') in each section. This is a structural step, not optional: it guarantees a resumable file exists from turn one, before any browsing happens.
+5. Open a brand-new, logged-out browser session (do not reuse any saved cookies/state): agent-browser open $target_url
+6. If the product requires an account/API key to proceed past onboarding, use: $api_key — exactly as your persona would encounter it (only when the product's own flow asks for it, not before, if your persona is doing a genuine first run).
 
 Task:
 Act as this persona doing REAL first-run onboarding and the concrete tasks described in your brief. Read what's on screen the way a real person would — don't just execute the minimum clicks to finish. Notice friction: confusing copy, unclear next steps, dead taps, missing feedback, anything that would make a real user hesitate, get lost, or quit. Also notice delights: anything that clearly worked well or exceeded expectations.
 
-IMPORTANT — budget your turns, do not leave the write for the very end: plan on roughly 25% of your turn budget going to WRITING the report, not just doing tasks. Write $output_dir/persona-$persona3.md incrementally as sections become ready (e.g. write ## Persona and start ## Friction Log as soon as onboarding is done, append entries as you complete each task) rather than composing the whole document from memory in your final turn. A partial-but-saved file is far more useful than a complete draft that never got written because turns ran out.
+IMPORTANT — budget your turns, do not leave the write for the very end: plan on roughly 25% of your turn budget going to WRITING the report, not just doing tasks. APPEND your completed observations to $output_dir/persona-$persona3.md after EACH task (replacing placeholder text the first time you fill a section) — do not wait until you feel 'done' to write. A partial-but-saved file is far more useful than a complete draft that never got written because turns ran out. The skeleton alone does not count as a finished report — every section must be completed with real content before you finish.
 
 When finished, close your browser: agent-browser close
 
@@ -605,7 +630,7 @@ Write your complete friction log to $output_dir/persona-$persona3.md with these 
   ## Bug Table
   (markdown table: | Screen | Issue | Severity | Reproducible steps |)
 
-Report success once persona-$persona3.md is written."
+Before reporting anything, verify your own work with a tool call: run `wc -c $output_dir/persona-$persona3.md` and confirm it is at least 1500 bytes with all placeholders replaced by real content. Only after seeing that confirmed should you report success (via report_outcome if available, else a brief final text summary) — never report success in the same breath as your last content write without that verification call in between."
     ]
 
     check_persona3 -> persona3 [label="todo", condition="context.tool.last_line=todo"]
@@ -615,7 +640,7 @@ Report success once persona-$persona3.md is written."
     verify_persona3 [
         shape=parallelogram,
         label="Persona 3 artifact verified?",
-        tool_command="if [ -f \"${output_dir}/persona-${persona3}.md\" ]; then rm -f \"${output_dir}/.persona3-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.persona3-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.persona3-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
+        tool_command="if [ -f \"${output_dir}/persona-${persona3}.md\" ] && [ $(wc -c < \"${output_dir}/persona-${persona3}.md\") -ge 1500 ]; then rm -f \"${output_dir}/.persona3-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.persona3-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.persona3-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
     ]
 
     verify_persona3 -> check_synthesis  [label="ok",       condition="context.tool.last_line=ok"]
@@ -640,7 +665,7 @@ Report success once persona-$persona3.md is written."
     check_synthesis [
         shape=parallelogram,
         label="Spec exists?",
-        tool_command="test -f \"${output_dir}/research-spec.md\" && printf done || printf todo"
+        tool_command="if [ -f \"${output_dir}/research-spec.md\" ] && [ $(wc -c < \"${output_dir}/research-spec.md\") -ge 1500 ]; then printf done; else printf todo; fi"
     ]
 
     synthesis [
@@ -654,6 +679,8 @@ Report success once persona-$persona3.md is written."
         retry_target="synthesis",
         max_retries="2",
         prompt="You are conducting the SYNTHESIS stage of a simulated-user-research round — the final consolidation before human review.
+
+IMPORTANT — how your session ends: replying with text and no tool call ENDS your session immediately. Never narrate an intention ('let me write the spec now') as a text-only reply — call the tool in that same turn instead. Until research-spec.md is written and verified, every reply must contain a tool call.
 
 Read EVERY artifact in $output_dir that EXISTS (check each path before reading it — do not assume all six are present):
   - $output_dir/capture-notes.md
@@ -686,7 +713,9 @@ Write (or overwrite, on a revision pass) $output_dir/research-spec.md with these
   ## Sources
   (list every artifact you actually read, so a human can trace any claim back to its evidence)
 
-Report success once research-spec.md is written."
+The spec must be substantive and complete before you finish — a bare section skeleton does not satisfy this task.
+
+Before reporting anything, verify your own work with a tool call: run `wc -c $output_dir/research-spec.md` and confirm it is at least 1500 bytes. Only after seeing that confirmed should you report success (via report_outcome if available, else a brief final text summary)."
     ]
 
     check_synthesis -> synthesis [label="todo", condition="context.tool.last_line=todo"]
@@ -707,7 +736,7 @@ Report success once research-spec.md is written."
     verify_synthesis [
         shape=parallelogram,
         label="Synthesis artifact verified?",
-        tool_command="if [ -f \"${output_dir}/research-spec.md\" ]; then rm -f \"${output_dir}/.synthesis-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.synthesis-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.synthesis-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
+        tool_command="if [ -f \"${output_dir}/research-spec.md\" ] && [ $(wc -c < \"${output_dir}/research-spec.md\") -ge 1500 ]; then rm -f \"${output_dir}/.synthesis-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.synthesis-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.synthesis-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
     ]
 
     verify_synthesis -> gate               [label="ok",        condition="context.tool.last_line=ok"]
