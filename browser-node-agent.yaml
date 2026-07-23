@@ -1,0 +1,84 @@
+# browser-node-agent.yaml -- local overlay bundle for the simulated-user-research
+# pipeline's single-shot browser nodes (scripts/run_browser_node.py).
+#
+# WHY THIS FILE EXISTS:
+#
+# The three persona nodes (+ capture node) in simulated-user-research.dot no
+# longer run as loop-agent-orchestrated box (LLM) nodes spawned BY the
+# attractor pipeline engine. Instead they run as shape=parallelogram (tool)
+# nodes that shell out to `scripts/run_browser_node.py`, which itself invokes
+# `amplifier run -B <this-bundle> --mode single --output-format json "<instruction>"`
+# as a completely separate, single-shot Amplifier session per node execution.
+#
+# WHY A SEPARATE SESSION INSTEAD OF THE PIPELINE'S OWN session.spawn PATH:
+# loop-agent's coding-agent loop treats ANY assistant reply with no tool
+# call as natural session completion (there is no SessionConfig knob to
+# change this -- see run_browser_node.py's module docstring for the full
+# investigation). Persona role-play reliably produces exactly that shape:
+# a final in-character observation with no paired tool call. A single-shot
+# `amplifier run --mode single` session sidesteps the problem entirely
+# because ITS "session end" *is* the deliverable -- there is no wrong way
+# for it to end. This bundle is what that single-shot session runs under.
+#
+# This is a THIN, SELF-CONTAINED composition -- NOT a fork of the shipped
+# attractor-bundle agent yamls (agents/attractor-agent-anthropic.yaml etc in
+# amplifier-bundle-attractor). It intentionally does NOT include
+# behaviors/attractor-core's tool-report-outcome or the pipeline-progress /
+# pipeline-observability hooks -- those exist for INSIDE-pipeline nodes
+# (report_outcome routing, pipeline:* event emission) which have no meaning
+# for a bare single-shot session invoked from a shell subprocess. Keeping
+# this bundle deliberately minimal (bash + filesystem + search only) avoids
+# dragging in machinery this call path can't use.
+#
+# HOW TO POINT THE RUNNER AT THIS FILE:
+#   amplifier run -B /absolute/path/to/simulated-user-research/browser-node-agent.yaml \
+#     --mode single --output-format json "<instruction>"
+#
+# scripts/run_browser_node.py's --bundle argument takes exactly this path
+# (or an `amplifier bundle add`-registered name pointing at it -- see the
+# .dot's header comment for the registration one-liner). The .dot's
+# tool_command lines pass this path as --bundle via the ${bundle_file}
+# param (see simulated-user-research.dot's REQUIRED PARAMS section).
+
+bundle:
+  name: simulated-user-research-browser-node
+  version: 0.1.0
+  description: >
+    Minimal single-shot agent bundle for simulated-user-research's browser
+    pipeline nodes (persona sessions + visual capture). Anthropic provider,
+    loop-agent orchestrator (NOT loop-pipeline -- this is a leaf agent, never
+    a pipeline runner), bash + filesystem + search tools for driving
+    agent-browser via shell.
+
+providers:
+  - module: provider-anthropic
+    source: git+https://github.com/microsoft/amplifier-module-provider-anthropic@main
+    config:
+      default_model: claude-sonnet-4-6
+      timeout: 600
+
+session:
+  orchestrator:
+    module: loop-agent
+    source: git+https://github.com/microsoft/amplifier-bundle-attractor@main#subdirectory=modules/loop-agent
+    config:
+      max_tool_rounds_per_input: 60
+      default_command_timeout_ms: 120000
+  context:
+    module: context-simple
+    source: git+https://github.com/microsoft/amplifier-module-context-simple@main
+
+tools:
+  - module: tool-filesystem
+    source: git+https://github.com/microsoft/amplifier-module-tool-filesystem@main
+  - module: tool-bash
+    source: git+https://github.com/microsoft/amplifier-module-tool-bash@main
+    config:
+      timeout: 120
+  - module: tool-search
+    source: git+https://github.com/microsoft/amplifier-module-tool-search@main
+
+# Layer-1 base prompt is supplied by loop-agent's provider default
+# (context/system-anthropic.md, resolved from the attractor-bundle module's
+# own installed location -- see loop-agent's _resolve_system_prompt_file).
+# No system_prompt_file override needed here.

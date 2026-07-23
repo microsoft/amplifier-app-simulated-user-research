@@ -4,10 +4,12 @@
 //
 // Encodes the proven manual process end-to-end:
 //   1. SEED            (tool)      resumable scratch-instance seeding
-//   2. VISUAL CAPTURE   (box+bash)  browser walkthrough, 2 viewports, notes
+//   2. VISUAL CAPTURE   (tool)      single-shot subprocess, browser walkthrough,
+//                                  2 viewports, notes (see MECHANISM CHANGE below)
 //   3. DESIGN REVIEWS   (2x box)   IA review + responsive review, PARALLEL
-//   4. PERSONA SESSIONS (Nx box)   sequential (single browser daemon), true
+//   4. PERSONA SESSIONS (Nx tool)  sequential (single browser daemon), true
 //                                  first-run onboarding + tasks per persona
+//                                  (single-shot subprocess, see below)
 //   5. SYNTHESIS        (box)      consolidated implementation-ready spec
 //   6. HUMAN GATE       (hexagon)  approve / revise (loop, capped) / end
 //
@@ -16,18 +18,52 @@
 //
 // -- Design decisions worth reading before you edit -------------------------
 //
-// * BROWSER BRIDGE: box (LLM/codergen) nodes get a full spawned child agent
-//   session (loop-agent orchestrator + tool-bash + tool-filesystem + tool-
-//   search, per the attractor-pipeline bundle's per-provider agents). The
-//   `agent-browser` CLI is already on PATH on this box, so the spawned
-//   agent drives it directly via its bash tool — no `amplifier run -B
-//   browser-tester` subprocess-of-a-subprocess, no extra bundle composition.
-//   This is the recommended bridge: it's zero-ceremony, keeps the browser
-//   session inside the SAME node's context/thread, and avoids the latency
-//   and double-session overhead of shelling out to another full Amplifier
-//   session. (browser-tester's agents are an INTERACTIVE-session pattern —
-//   for delegate() inside a conversational agent — not a pipeline-node
-//   pattern; the box node's own bash tool is the right layer here.)
+// * MECHANISM CHANGE (3rd hardening cycle) — BROWSER NODES ARE NOW TOOL
+//   NODES, NOT box (LLM/codergen) NODES: capture_screens and all three
+//   persona nodes were originally box nodes with a full spawned child
+//   agent session (loop-agent orchestrator + bash/filesystem/search),
+//   driving `agent-browser` directly via bash inside that session. That
+//   design is STILL correct in principle (zero-ceremony, single thread/
+//   context) but has one fatal, UN-FIXABLE-AT-THE-PROMPT-LEVEL flaw:
+//   loop-agent's coding-agent loop (amplifier-bundle-attractor/modules/
+//   loop-agent/amplifier_module_loop_agent/agent_session.py.process_input)
+//   treats ANY assistant reply with no tool call as natural session
+//   completion — hardcoded, not gated by any SessionConfig field (checked
+//   config.py: no "require tool call" / "auto-continue on text-only"
+//   knob exists). Persona role-play makes models narrate a final
+//   in-character observation with no paired tool call; three consecutive
+//   hardening attempts (increasingly emphatic prompt-level warnings) died
+//   on the exact same shape. The fix is STRUCTURAL, not prompt-level:
+//   each of these four nodes is now shape=parallelogram (tool), shelling
+//   out to scripts/run_browser_node.py, which runs the SAME task as a
+//   completely separate, single-shot `amplifier run --mode single
+//   --output-format json` session under browser-node-agent.yaml (a local
+//   overlay bundle in this same directory) and captures that session's
+//   raw final response TEXT as the deliverable. A text-only final reply
+//   is no longer a failure mode for these four nodes — it is the expected
+//   way a single-shot session ends, and it's exactly what gets written to
+//   the report file. See scripts/run_browser_node.py's module docstring
+//   for the full investigation (why no loop-agent config knob exists) and
+//   the "MECHANISM CHANGE" comment block on each converted node below.
+//   The verify_* file-ground-truth quality gates (byte-size check +
+//   bounded retry + loud hard_stop) downstream of each of these nodes are
+//   COMPLETELY UNCHANGED — this fix only changes HOW the report gets
+//   written, never what counts as "good enough."
+//
+// * REVIEW + SYNTHESIS BOXES ARE DELIBERATELY UNCHANGED: review_ia,
+//   review_responsive, and synthesis remain shape=box (real spawned
+//   loop-agent child sessions via the pipeline engine's own session.spawn
+//   path). They don't drive a browser or role-play a persona — they read
+//   static artifacts and write a structured document — so they never
+//   exhibited the narration-without-a-tool-call death shape in this
+//   pipeline's incident history, and converting them would lose the
+//   review/synthesis prompt-level nuance (goal_gate, reasoning_effort
+//   overrides, Missing-inputs handling) for no benefit. If a review or
+//   synthesis node is EVER observed dying the same way (text-only final
+//   reply, no report_outcome, mid-sentence), apply the identical
+//   tool-node conversion to it — the wrapper script and overlay bundle
+//   already generalize (run_browser_node.py's --role could grow a
+//   "static-review" mode; not built until there's a proven need for it).
 //
 // * SEQUENTIAL PERSONAS (single browser daemon): the engine's concurrency
 //   model is single-threaded at the top level — only ONE node executes at
@@ -100,6 +136,23 @@ digraph SimulatedUserResearch {
     //                       below) and rename — DOT graphs are static, so
     //                       "N personas" means "author N persona nodes for
     //                       this roster."
+    //   sur_repo_dir     -- absolute path to this pipeline's own repo dir
+    //                       (the directory containing this .dot file), so
+    //                       the four tool-node browser stages can find
+    //                       scripts/run_browser_node.py. Not auto-derived —
+    //                       the engine has no "my own source directory" var
+    //                       reliably available inside a tool_command string
+    //                       (graph.source_dir is a parser-level Python
+    //                       attribute, not a $-substitutable context key).
+    //   browser_bundle   -- the bundle name or path run_browser_node.py's
+    //                       --bundle flag should pass to
+    //                       `amplifier run -B <browser_bundle>`. Register
+    //                       browser-node-agent.yaml (in this repo) once via
+    //                       `amplifier bundle add file://$sur_repo_dir/browser-node-agent.yaml --name sur-browser-node`
+    //                       then pass browser_bundle=sur-browser-node (or
+    //                       pass the file://... path directly — both work,
+    //                       proven live; the registered name is more
+    //                       portable/readable in run invocations).
     // ------------------------------------------------------------------
 
     start [shape=Mdiamond, label="Start"]
@@ -144,59 +197,49 @@ digraph SimulatedUserResearch {
         tool_command="if [ -f \"${output_dir}/capture-notes.md\" ] && [ $(wc -c < \"${output_dir}/capture-notes.md\") -ge 800 ]; then printf done; else printf todo; fi"
     ]
 
-    // Turn/timeout budget: manual capture sessions (22 screenshots x 2
-    // viewports, each requiring open/snapshot/click/scroll/screenshot
-    // round-trips) need real headroom. 90 turns / 4200s (70min) gives
-    // margin above the ~80-turn floor this stage needs; the prior cap of
-    // 40 was silently truncating mid-walkthrough (see DEFECT 1 in the
-    // pipeline's incident notes: node reported outcome=success after
-    // exhausting 40 turns, mid-sentence, with capture-notes.md never
-    // written and only a subset of screens/ populated). Turn exhaustion
-    // with no report_outcome call still yields a SUCCESS-shaped result
-    // from this backend (fail-open by design elsewhere in the stack), so
-    // raising the ceiling is necessary but NOT sufficient on its own --
-    // see verify_capture below, which is the actual enforcement.
+    // ------------------------------------------------------------------
+    // MECHANISM CHANGE (see the graph header's "MECHANISM CHANGE" note for
+    // full context): this was a shape=box (LLM/codergen) node whose prompt
+    // instructed the model never to end on a text-only reply. That
+    // instruction demonstrably decays across attempts inside loop-agent's
+    // coding-agent loop: loop-agent (amplifier-bundle-attractor/modules/
+    // loop-agent) treats ANY assistant reply with no tool call as natural
+    // session completion -- hardcoded in agent_session.py.process_input,
+    // NOT gated by any SessionConfig field (config.py has no "require
+    // tool call" / "auto-continue on text-only" knob). Persona/capture
+    // role-play reliably produces a final in-character or narrated
+    // observation with no paired tool call, and 3/3 identical deaths were
+    // observed in this pipeline's own run history despite an explicit,
+    // emphatic prompt-level warning.
+    //
+    // STRUCTURAL FIX: this is now shape=parallelogram (tool node) that
+    // shells out to scripts/run_browser_node.py, which runs the same task
+    // as a completely separate SINGLE-SHOT `amplifier run --mode single
+    // --output-format json` session and captures that session's raw final
+    // response TEXT as the deliverable -- written to capture-notes.md by
+    // the wrapper script itself, not by the model remembering to call a
+    // file-write tool as its last action. A text-only final reply is no
+    // longer a failure mode for this stage; it is now the expected way a
+    // single-shot session ends. See scripts/run_browser_node.py's module
+    // docstring for the full investigation (why no loop-agent config knob
+    // exists) and browser-node-agent.yaml for the bundle this shells out
+    // to.
+    //
+    // The tool_command always exits 0 (note the trailing `|| true`):
+    // exactly like the ORIGINAL box node, this node's own reported
+    // outcome is NOT the quality gate -- verify_capture below (UNCHANGED)
+    // is the sole judge of whether capture-notes.md is real and
+    // sufficient, via the same file-ground-truth check + bounded retry +
+    // loud hard_stop it always used. This node's job is only to run the
+    // subprocess and get out of the way; retrying a bad/missing result is
+    // still entirely verify_capture's job (its "retry" edge loops back to
+    // this very node).
     capture_screens [
-        shape=box,
+        shape=parallelogram,
         class="capture browser",
-        label="Visual Capture",
-        fidelity="truncate",
-        max_agent_turns="90",
+        label="Visual Capture (single-shot subprocess)",
         timeout="4200",
-        allow_partial="true",
-        max_retries="2",
-        prompt="You are conducting the VISUAL CAPTURE stage of a simulated-user-research round for a web product.
-
-IMPORTANT — how your session ends: replying with text and no tool call ENDS your session immediately, right there, with whatever you've done so far as the final state. Never narrate an intention ('let me write the notes now', 'now I have everything I need to...') as a text-only reply — that sentence IS your last action if you don't pair it with a tool call in the SAME turn. Until capture-notes.md exists on disk AND you have verified it with a real `wc -c` check, every single reply you send must contain a tool call. If you notice yourself about to write a sentence describing what you're about to do, stop and issue the tool call instead — do it, don't announce it.
-
-Setup:
-- As your very first action, run: agent-browser close --all   (clears any stale browser daemon from a prior crashed run; harmless if nothing was running)
-- Target application: $target_url
-- If the app requires a login/API key to view content, use: $api_key
-- Output directory for artifacts: $output_dir  (create it and $output_dir/screens/ if they do not exist)
-- If $output_dir/capture-notes.md already exists with partial content from a prior truncated attempt, treat it as a partial draft: read it, check $output_dir/screens/ for which screens are already captured, and continue from where that attempt left off rather than starting over from scratch.
-- If $output_dir/capture-notes.md does NOT exist yet, create it right now, before opening the browser, with the section skeleton below populated with placeholder text ('(in progress)'). This is a structural step, not optional: it guarantees a resumable file exists from turn one, before any browsing happens.
-
-  ## Screens Captured
-  (in progress)
-  ## Observed Issues
-  (in progress)
-
-Task:
-Walk the application screen-by-screen using the agent-browser CLI via bash (agent-browser open / snapshot -ic / click / fill / scroll / screenshot). Visit every primary screen or route a first-time user would encounter (onboarding, main list/feed, a detail view, settings, any consent/permission screens). For EACH screen, capture it at TWO viewport widths:
-  1. Mobile: agent-browser set viewport 390 844
-  2. Desktop: agent-browser set viewport 1280 900
-
-Save every screenshot into $output_dir/screens/ with descriptive, sequential filenames, e.g. screens/01-onboarding-mobile.png, screens/01-onboarding-desktop.png, screens/02-main-feed-mobile.png. Zero-pad the sequence number.
-
-While you go, keep a running list of anything that looks broken, confusing, or unfinished: layout breaks, overlapping elements, dead taps, missing loading states, text truncation, or anything a real user would notice as a bug. This is NOT a persona simulation — just an honest, first-pass visual and functional walkthrough note.
-
-IMPORTANT — write incrementally, do not save the write for your last turn: after every 3-4 screens, APPEND what you have so far to $output_dir/capture-notes.md (replacing the placeholder text the first time) so a truncated session still leaves a usable partial record instead of nothing. Do not treat the write as a final step to do once all screens are captured. The skeleton alone does not satisfy the contract — the file must be substantive (real screen entries and real observed issues, not placeholders) before you finish.
-
-When finished:
-1. Ensure $output_dir/capture-notes.md is complete and accurate: a numbered list of every screen you captured (with its screenshot filenames), and a separate 'Observed Issues' section listing anything broken you noticed (screen, what's wrong, severity guess: P1/P2/P3). Placeholders must be gone.
-2. Run agent-browser close to end the browser session cleanly — REQUIRED, later stages assume no browser daemon is left running.
-3. Verify your own work with a tool call before reporting anything: run `wc -c $output_dir/capture-notes.md` and confirm it is at least 800 bytes. Only after seeing that confirmed should you report success (via report_outcome if available, else a brief final text summary) — never report success in the same breath as your last content write without that verification call in between."
+        tool_command="python3 \"${sur_repo_dir}/scripts/run_browser_node.py\" --role capture --bundle \"${browser_bundle}\" --target-url \"${target_url}\" --api-key \"${api_key}\" --output-dir \"${output_dir}\" --report-path \"${output_dir}/capture-notes.md\" --timeout-s 4000 || true"
     ]
 
     check_capture -> capture_screens [label="todo", condition="context.tool.last_line=todo"]
@@ -417,64 +460,31 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
         tool_command="if [ -f \"${output_dir}/persona-${persona1}.md\" ] && [ $(wc -c < \"${output_dir}/persona-${persona1}.md\") -ge 1500 ]; then printf done; else printf todo; fi"
     ]
 
-    // Turn/timeout budget: manual persona sessions ran 73-97 agent turns
-    // (real first-run onboarding + task completion + writing a full
-    // friction log, all live in a real browser). The prior cap of 40 was
-    // silently truncating mid-session (DEFECT 1: persona1 hit outcome=success
-    // at 384s with notes truncated mid-sentence -- "Now I have everything I
-    // need to write a comprehensive persona researc..." -- and
-    // persona-marisol.md was NEVER written; same shape for persona2 at 150s).
-    // 110 turns / 3600s(60min) gives headroom above the observed 73-97 turn
-    // range. allow_partial stays true for graceful degradation WITHIN a
-    // single attempt's retry budget (spec 3.5's own PARTIAL_SUCCESS path),
-    // but that is now backstopped by verify_persona1 below, which checks the
-    // actual file rather than trusting the reported status.
+    // ------------------------------------------------------------------
+    // MECHANISM CHANGE (same fix as capture_screens above): this was a
+    // shape=box node whose prompt begged the model never to end on a
+    // text-only reply. That is exactly the shape loop-agent's coding-agent
+    // loop cannot be configured to reject (see capture_screens's comment
+    // block and scripts/run_browser_node.py's module docstring for the
+    // full investigation) -- and persona role-play is the WORST case for
+    // it: a persona naturally narrates in character right up to its final
+    // in-character observation, with no tool call paired to it. This is
+    // now shape=parallelogram, shelling out to scripts/run_browser_node.py
+    // for a single-shot session whose raw final response text IS the
+    // friction-log deliverable, written to persona-$persona1.md by the
+    // wrapper script itself. verify_persona1 below is UNCHANGED and
+    // remains the sole quality gate (file-ground-truth size check +
+    // bounded retry + loud hard_stop) -- this node's tool_command always
+    // exits 0 (`|| true`) so a subprocess-level failure routes through to
+    // verify_persona1 (which will correctly see a missing/undersized file
+    // and drive the retry/hard-stop path) rather than dead-ending on an
+    // unmatched FAIL edge.
     persona1 [
-        shape=box,
+        shape=parallelogram,
         class="persona browser",
-        label="Persona Session 1",
-        fidelity="truncate",
-        max_agent_turns="110",
+        label="Persona Session 1 (single-shot subprocess)",
         timeout="3600",
-        allow_partial="true",
-        max_retries="1",
-        prompt="You are conducting a PERSONA SESSION as part of a simulated-user-research round. You embody ONE persona doing a TRUE first-run of the product in a real browser — this is NOT a review of screenshots, you must actually drive the app live via the agent-browser CLI.
-
-IMPORTANT — how your session ends: replying with text and no tool call ENDS your session immediately, right there, with whatever you've done so far as the final state. Never narrate an intention ('let me write the report now', 'now I have everything I need to write a comprehensive persona research...') as a text-only reply — that sentence IS your last action if you don't pair it with a tool call in the SAME turn. Until your output file is written and verified, every single reply you send must contain a tool call. If you notice yourself about to write a sentence describing what you're about to do, stop and issue the tool call instead — do it, don't announce it.
-
-Setup:
-1. As your first action, run: agent-browser close --all  (clears any stale browser daemon; harmless if none running — REQUIRED, since persona sessions run one at a time and must never overlap another session's browser state)
-2. Read your persona brief completely: $personas_dir/$persona1.md — this defines who you are, your goals, your technical comfort level, and what would make you say yes or no to this product. Adopt this persona fully for the rest of the session; do not break character in your actions or your written log.
-3. If $output_dir/persona-$persona1.md already exists from a prior truncated attempt, treat it as an incomplete draft: read it to see how far you got, then continue/redo the remaining tasks rather than starting completely over.
-4. If $output_dir/persona-$persona1.md does NOT exist yet, create it right now, immediately after reading the brief and BEFORE opening the browser, with the full section skeleton below populated with placeholder text ('(in progress)') in each section. This is a structural step, not optional: it guarantees a resumable file exists from turn one, before any browsing happens.
-5. Open a brand-new, logged-out browser session (do not reuse any saved cookies/state): agent-browser open $target_url
-6. If the product requires an account/API key to proceed past onboarding, use: $api_key — exactly as your persona would encounter it (only when the product's own flow asks for it, not before, if your persona is doing a genuine first run).
-
-Task:
-Act as this persona doing REAL first-run onboarding and the concrete tasks described in your brief. Read what's on screen the way a real person would — don't just execute the minimum clicks to finish. Notice friction: confusing copy, unclear next steps, dead taps, missing feedback, anything that would make a real user hesitate, get lost, or quit. Also notice delights: anything that clearly worked well or exceeded expectations.
-
-IMPORTANT — budget your turns, do not leave the write for the very end: plan on roughly 25% of your turn budget going to WRITING the report, not just doing tasks. APPEND your completed observations to $output_dir/persona-$persona1.md after EACH task (replacing placeholder text the first time you fill a section) — do not wait until you feel 'done' to write. A partial-but-saved file is far more useful than a complete draft that never got written because turns ran out. The skeleton alone does not count as a finished report — every section must be completed with real content before you finish.
-
-When finished, close your browser: agent-browser close
-
-Output:
-Write your complete friction log to $output_dir/persona-$persona1.md with these exact sections:
-  ## Persona
-  (name, one-line description from the brief)
-  ## Friction Log
-  (chronological; each entry: what you tried, what happened, severity P1 blocking / P2 annoying / P3 minor)
-  ## Verbatim Confusions
-  (direct quotes of anything you — in character — would have said out loud in confusion)
-  ## Delights
-  (anything that worked well)
-  ## One Change
-  (the SINGLE change that would most improve your experience)
-  ## Verdict
-  (would you adopt/continue using this product? yes/no/maybe, one paragraph why)
-  ## Bug Table
-  (markdown table: | Screen | Issue | Severity | Reproducible steps |)
-
-Before reporting anything, verify your own work with a tool call: run `wc -c $output_dir/persona-$persona1.md` and confirm it is at least 1500 bytes with all placeholders replaced by real content. Only after seeing that confirmed should you report success (via report_outcome if available, else a brief final text summary) — never report success in the same breath as your last content write without that verification call in between."
+        tool_command="python3 \"${sur_repo_dir}/scripts/run_browser_node.py\" --role persona --bundle \"${browser_bundle}\" --target-url \"${target_url}\" --api-key \"${api_key}\" --output-dir \"${output_dir}\" --report-path \"${output_dir}/persona-${persona1}.md\" --persona-name \"${persona1}\" --personas-dir \"${personas_dir}\" --timeout-s 3500 || true"
     ]
 
     check_persona1 -> persona1 [label="todo", condition="context.tool.last_line=todo"]
@@ -511,52 +521,15 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
         tool_command="if [ -f \"${output_dir}/persona-${persona2}.md\" ] && [ $(wc -c < \"${output_dir}/persona-${persona2}.md\") -ge 1500 ]; then printf done; else printf todo; fi"
     ]
 
+    // MECHANISM CHANGE: same fix as persona1 above -- see persona1's
+    // comment block and scripts/run_browser_node.py's module docstring
+    // for the full investigation.
     persona2 [
-        shape=box,
+        shape=parallelogram,
         class="persona browser",
-        label="Persona Session 2",
-        fidelity="truncate",
-        max_agent_turns="110",
+        label="Persona Session 2 (single-shot subprocess)",
         timeout="3600",
-        allow_partial="true",
-        max_retries="1",
-        prompt="You are conducting a PERSONA SESSION as part of a simulated-user-research round. You embody ONE persona doing a TRUE first-run of the product in a real browser — this is NOT a review of screenshots, you must actually drive the app live via the agent-browser CLI.
-
-IMPORTANT — how your session ends: replying with text and no tool call ENDS your session immediately, right there, with whatever you've done so far as the final state. Never narrate an intention ('let me write the report now', 'now I have everything I need to write a comprehensive persona research...') as a text-only reply — that sentence IS your last action if you don't pair it with a tool call in the SAME turn. Until your output file is written and verified, every single reply you send must contain a tool call. If you notice yourself about to write a sentence describing what you're about to do, stop and issue the tool call instead — do it, don't announce it.
-
-Setup:
-1. As your first action, run: agent-browser close --all  (clears any stale browser daemon; harmless if none running — REQUIRED, since persona sessions run one at a time and must never overlap another session's browser state)
-2. Read your persona brief completely: $personas_dir/$persona2.md — this defines who you are, your goals, your technical comfort level, and what would make you say yes or no to this product. Adopt this persona fully for the rest of the session; do not break character in your actions or your written log.
-3. If $output_dir/persona-$persona2.md already exists from a prior truncated attempt, treat it as an incomplete draft: read it to see how far you got, then continue/redo the remaining tasks rather than starting completely over.
-4. If $output_dir/persona-$persona2.md does NOT exist yet, create it right now, immediately after reading the brief and BEFORE opening the browser, with the full section skeleton below populated with placeholder text ('(in progress)') in each section. This is a structural step, not optional: it guarantees a resumable file exists from turn one, before any browsing happens.
-5. Open a brand-new, logged-out browser session (do not reuse any saved cookies/state): agent-browser open $target_url
-6. If the product requires an account/API key to proceed past onboarding, use: $api_key — exactly as your persona would encounter it (only when the product's own flow asks for it, not before, if your persona is doing a genuine first run).
-
-Task:
-Act as this persona doing REAL first-run onboarding and the concrete tasks described in your brief. Read what's on screen the way a real person would — don't just execute the minimum clicks to finish. Notice friction: confusing copy, unclear next steps, dead taps, missing feedback, anything that would make a real user hesitate, get lost, or quit. Also notice delights: anything that clearly worked well or exceeded expectations.
-
-IMPORTANT — budget your turns, do not leave the write for the very end: plan on roughly 25% of your turn budget going to WRITING the report, not just doing tasks. APPEND your completed observations to $output_dir/persona-$persona2.md after EACH task (replacing placeholder text the first time you fill a section) — do not wait until you feel 'done' to write. A partial-but-saved file is far more useful than a complete draft that never got written because turns ran out. The skeleton alone does not count as a finished report — every section must be completed with real content before you finish.
-
-When finished, close your browser: agent-browser close
-
-Output:
-Write your complete friction log to $output_dir/persona-$persona2.md with these exact sections:
-  ## Persona
-  (name, one-line description from the brief)
-  ## Friction Log
-  (chronological; each entry: what you tried, what happened, severity P1 blocking / P2 annoying / P3 minor)
-  ## Verbatim Confusions
-  (direct quotes of anything you — in character — would have said out loud in confusion)
-  ## Delights
-  (anything that worked well)
-  ## One Change
-  (the SINGLE change that would most improve your experience)
-  ## Verdict
-  (would you adopt/continue using this product? yes/no/maybe, one paragraph why)
-  ## Bug Table
-  (markdown table: | Screen | Issue | Severity | Reproducible steps |)
-
-Before reporting anything, verify your own work with a tool call: run `wc -c $output_dir/persona-$persona2.md` and confirm it is at least 1500 bytes with all placeholders replaced by real content. Only after seeing that confirmed should you report success (via report_outcome if available, else a brief final text summary) — never report success in the same breath as your last content write without that verification call in between."
+        tool_command="python3 \"${sur_repo_dir}/scripts/run_browser_node.py\" --role persona --bundle \"${browser_bundle}\" --target-url \"${target_url}\" --api-key \"${api_key}\" --output-dir \"${output_dir}\" --report-path \"${output_dir}/persona-${persona2}.md\" --persona-name \"${persona2}\" --personas-dir \"${personas_dir}\" --timeout-s 3500 || true"
     ]
 
     check_persona2 -> persona2 [label="todo", condition="context.tool.last_line=todo"]
@@ -585,52 +558,15 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
         tool_command="if [ -f \"${output_dir}/persona-${persona3}.md\" ] && [ $(wc -c < \"${output_dir}/persona-${persona3}.md\") -ge 1500 ]; then printf done; else printf todo; fi"
     ]
 
+    // MECHANISM CHANGE: same fix as persona1/persona2 above -- see
+    // persona1's comment block and scripts/run_browser_node.py's module
+    // docstring for the full investigation.
     persona3 [
-        shape=box,
+        shape=parallelogram,
         class="persona browser",
-        label="Persona Session 3",
-        fidelity="truncate",
-        max_agent_turns="110",
+        label="Persona Session 3 (single-shot subprocess)",
         timeout="3600",
-        allow_partial="true",
-        max_retries="1",
-        prompt="You are conducting a PERSONA SESSION as part of a simulated-user-research round. You embody ONE persona doing a TRUE first-run of the product in a real browser — this is NOT a review of screenshots, you must actually drive the app live via the agent-browser CLI.
-
-IMPORTANT — how your session ends: replying with text and no tool call ENDS your session immediately, right there, with whatever you've done so far as the final state. Never narrate an intention ('let me write the report now', 'now I have everything I need to write a comprehensive persona research...') as a text-only reply — that sentence IS your last action if you don't pair it with a tool call in the SAME turn. Until your output file is written and verified, every single reply you send must contain a tool call. If you notice yourself about to write a sentence describing what you're about to do, stop and issue the tool call instead — do it, don't announce it.
-
-Setup:
-1. As your first action, run: agent-browser close --all  (clears any stale browser daemon; harmless if none running — REQUIRED, since persona sessions run one at a time and must never overlap another session's browser state)
-2. Read your persona brief completely: $personas_dir/$persona3.md — this defines who you are, your goals, your technical comfort level, and what would make you say yes or no to this product. Adopt this persona fully for the rest of the session; do not break character in your actions or your written log.
-3. If $output_dir/persona-$persona3.md already exists from a prior truncated attempt, treat it as an incomplete draft: read it to see how far you got, then continue/redo the remaining tasks rather than starting completely over.
-4. If $output_dir/persona-$persona3.md does NOT exist yet, create it right now, immediately after reading the brief and BEFORE opening the browser, with the full section skeleton below populated with placeholder text ('(in progress)') in each section. This is a structural step, not optional: it guarantees a resumable file exists from turn one, before any browsing happens.
-5. Open a brand-new, logged-out browser session (do not reuse any saved cookies/state): agent-browser open $target_url
-6. If the product requires an account/API key to proceed past onboarding, use: $api_key — exactly as your persona would encounter it (only when the product's own flow asks for it, not before, if your persona is doing a genuine first run).
-
-Task:
-Act as this persona doing REAL first-run onboarding and the concrete tasks described in your brief. Read what's on screen the way a real person would — don't just execute the minimum clicks to finish. Notice friction: confusing copy, unclear next steps, dead taps, missing feedback, anything that would make a real user hesitate, get lost, or quit. Also notice delights: anything that clearly worked well or exceeded expectations.
-
-IMPORTANT — budget your turns, do not leave the write for the very end: plan on roughly 25% of your turn budget going to WRITING the report, not just doing tasks. APPEND your completed observations to $output_dir/persona-$persona3.md after EACH task (replacing placeholder text the first time you fill a section) — do not wait until you feel 'done' to write. A partial-but-saved file is far more useful than a complete draft that never got written because turns ran out. The skeleton alone does not count as a finished report — every section must be completed with real content before you finish.
-
-When finished, close your browser: agent-browser close
-
-Output:
-Write your complete friction log to $output_dir/persona-$persona3.md with these exact sections:
-  ## Persona
-  (name, one-line description from the brief)
-  ## Friction Log
-  (chronological; each entry: what you tried, what happened, severity P1 blocking / P2 annoying / P3 minor)
-  ## Verbatim Confusions
-  (direct quotes of anything you — in character — would have said out loud in confusion)
-  ## Delights
-  (anything that worked well)
-  ## One Change
-  (the SINGLE change that would most improve your experience)
-  ## Verdict
-  (would you adopt/continue using this product? yes/no/maybe, one paragraph why)
-  ## Bug Table
-  (markdown table: | Screen | Issue | Severity | Reproducible steps |)
-
-Before reporting anything, verify your own work with a tool call: run `wc -c $output_dir/persona-$persona3.md` and confirm it is at least 1500 bytes with all placeholders replaced by real content. Only after seeing that confirmed should you report success (via report_outcome if available, else a brief final text summary) — never report success in the same breath as your last content write without that verification call in between."
+        tool_command="python3 \"${sur_repo_dir}/scripts/run_browser_node.py\" --role persona --bundle \"${browser_bundle}\" --target-url \"${target_url}\" --api-key \"${api_key}\" --output-dir \"${output_dir}\" --report-path \"${output_dir}/persona-${persona3}.md\" --persona-name \"${persona3}\" --personas-dir \"${personas_dir}\" --timeout-s 3500 || true"
     ]
 
     check_persona3 -> persona3 [label="todo", condition="context.tool.last_line=todo"]
