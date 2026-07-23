@@ -1,0 +1,42 @@
+[project]
+name = "amplifier-simulated-user-research"
+version = "0.1.0"
+description = "L2/L4 orchestration over the simulated-user-research attractor pipeline (the .dot is the logic home)"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [
+    { name = "Microsoft MADE:Explorations Team" },
+]
+dependencies = [
+    "amplifier-module-pipeline-runner @ git+https://github.com/microsoft/amplifier-bundle-attractor@main#subdirectory=modules/pipeline-runner",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+amplifier-simulated-user-research = "amplifier_simulated_user_research.cli:main"
+asur = "amplifier_simulated_user_research.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["amplifier_simulated_user_research"]
+exclude = ["amplifier_simulated_user_research/tests"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=1.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib"
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"

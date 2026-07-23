@@ -1,0 +1,50 @@
+// A small Amplifier bundle that provides one tool for running product tests with AI-simulated users.
+digraph simulated_user_research {
+    rankdir=LR
+    fontname="Helvetica"
+    fontsize=12
+    label="Simulated User Research v0.1.0\nAn Amplifier toolkit that tests products using AI-simulated people"
+    labelloc=t
+    labeljust=c
+    nodesep=0.6
+    ranksep=0.7
+    bgcolor="white"
+    source_hash="b9e720fbb38dfb8f75af1ed79ab77ff79cf913b87d601694b622c0f1d4b47535"
+
+    node [fontname="Helvetica", fontsize=11, style="filled,rounded"]
+    edge [fontname="Helvetica", fontsize=9]
+
+    root_simulated_user_research [label="Simulated User Research v0.1.0\n1 tools · 0 agents\n~276 tok aggregate", shape=box, fillcolor="#80cbc4", style="filled,rounded,bold", penwidth=2]
+
+    subgraph cluster_modules {
+        label="What's Inside (Building Blocks)"
+        style="filled"
+        fillcolor="#f9f9f9"
+        color="#999999"
+
+        mod_tool_simulated_user_research [label="Simulated User Research Tool\ntool-simulated-user-research\n2 tool · ~133 tok", shape=box, fillcolor="#bbdefb", style="filled,rounded"]
+    }
+
+    subgraph cluster_legend {
+        label="Legend — What the Colors Mean"
+        style="filled"
+        fillcolor="white"
+        color="#cccccc"
+        fontsize=9
+
+        leg_root [label="root bundle", shape=box, fillcolor="#80cbc4", style="filled,rounded,bold", fontsize=9]
+        leg_behavior [label="behavior", shape=box, fillcolor="#e0f2f1", style="filled,rounded", fontsize=9]
+        leg_agent [label="agent", shape=box, fillcolor="#c8e6c9", style="filled,rounded", fontsize=9]
+        leg_module [label="module", shape=box, fillcolor="#bbdefb", style="filled,rounded", fontsize=9]
+        leg_provider [label="provider", shape=box, fillcolor="#e0e0e0", style="filled,rounded", fontsize=9]
+        leg_context [label="context", shape=box, fillcolor="#e1bee7", style="filled,rounded", fontsize=9]
+        leg_standalone [label="standalone", shape=box, fillcolor="#80cbc4", style="filled,rounded", fontsize=9]
+        leg_experiment [label="experiment", shape=box, fillcolor="#e1bee7", style="filled,rounded", fontsize=9]
+        leg_ext_cost [label="ext+cost", shape=box, fillcolor="#80cbc4", style="dashed", color="red", penwidth=2, fontsize=9]
+        leg_ext_muted [label="ext+no-cost", shape=box, fillcolor="#f5f5f5", style="dashed", fontsize=9]
+    }
+
+    disclaimer [label="Token estimates: ~4 chars/token\nSolid border = local (counted)\nDashed + red = external, hidden cost (not counted)\nDashed + muted = external, no cost\nExcludes: sub-session costs, runtime-dynamic", shape=note, fillcolor="#eceff1", style="filled", fontsize=9]
+
+
+}

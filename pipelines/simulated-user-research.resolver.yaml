@@ -1,0 +1,103 @@
+# simulated-user-research.resolver.yaml
+#
+# Sidecar manifest for simulated-user-research.dot. Declares this pipeline to
+# the Amplifier Resolve dot-graph resolver so it appears in the Resolve UI
+# picker with a typed form (see amplifier-bundle-resolve's RESOLVER_GUIDE.md
+# and the dot-graph resolver's `pipelines/` directory convention).
+#
+# HONESTY NOTE (keep this accurate, don't overclaim): this sidecar declares
+# the pipeline's PARAMS for the picker form only. Two runtime prerequisites
+# it cannot express as a param:
+#   1. The dot-graph resolver's worker environment must have ANTHROPIC_API_KEY
+#      (or the appropriate provider key) set -- this pipeline's graph-level
+#      model_stylesheet pins llm_provider=anthropic for every LLM (box) node.
+#   2. The `agent-browser` CLI (github.com/vercel-labs/agent-browser) must be
+#      on PATH inside the worker container -- the four browser tool-nodes
+#      (capture_screens, persona1-3) shell out to it via
+#      scripts/run_browser_node.py.
+# Neither is a per-run form field; both are one-time worker/environment setup.
+# See this repo's README ("Prerequisites") for the full list.
+#
+# Params are seeded into the pipeline engine's context at dispatch time,
+# reaching tool_command / prompt $-expansion exactly as a CLI --param would.
+
+name: "Simulated User Research"
+description: >
+  Run a full simulated user-research round against a web product: seed a
+  scratch instance, capture every screen, run parallel IA/responsive design
+  reviews, put N personas through real first-run browser sessions, and
+  synthesize everything into one implementation-ready spec -- gated by a
+  human approve/revise checkpoint at the end.
+pipeline: simulated-user-research.dot
+params:
+  target_url:
+    input: shortText
+    label: "Target URL"
+    description: >
+      Base URL of the scratch instance to test (e.g. http://host:port).
+    required: true
+  api_key:
+    input: shortText
+    label: "App API key"
+    description: >
+      API key/credential the personas use to log in to the target app.
+      This is the APPLICATION's credential, not an LLM provider key.
+    required: true
+  seed_command:
+    input: shortText
+    label: "Seed command"
+    description: >
+      Full shell command (with its own flags) that seeds/refreshes the
+      scratch instance. Must be safely re-runnable -- the pipeline also
+      skips it once a completion marker exists.
+    required: true
+  personas_dir:
+    input: shortText
+    label: "Personas directory"
+    description: >
+      Absolute path to the folder of <name>.md persona brief files.
+    required: true
+  output_dir:
+    input: shortText
+    label: "Output directory"
+    description: >
+      Absolute path for all artifacts this round produces (capture notes,
+      reviews, persona reports, the final spec).
+    required: true
+  app_source_hint:
+    input: shortText
+    label: "App source hint"
+    description: >
+      Comma-separated file/dir path(s) the design reviewers should read (the
+      app's own source, for cross-referencing against the screenshots).
+    required: true
+  persona1:
+    input: shortText
+    label: "Persona 1 (bare name)"
+    description: "Must match <personas_dir>/<name>.md."
+    required: true
+  persona2:
+    input: shortText
+    label: "Persona 2 (bare name)"
+    description: "Must match <personas_dir>/<name>.md."
+    required: true
+  persona3:
+    input: shortText
+    label: "Persona 3 (bare name)"
+    description: "Must match <personas_dir>/<name>.md."
+    required: true
+  sur_repo_dir:
+    input: shortText
+    label: "Pipeline repo root"
+    description: >
+      Absolute path to the amplifier-simulated-user-research repo root (the
+      directory containing scripts/ and browser-node-agent.yaml -- NOT the
+      pipelines/ subdirectory this .dot lives in).
+    required: true
+  browser_bundle:
+    input: shortText
+    label: "Browser node bundle"
+    description: >
+      Bundle name or path for the single-shot browser-node sessions
+      (register browser-node-agent.yaml once as e.g. "sur-browser-node").
+    required: true

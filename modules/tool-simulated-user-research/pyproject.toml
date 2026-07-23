@@ -1,0 +1,87 @@
+[project]
+name = "amplifier-module-tool-simulated-user-research"
+version = "0.1.0"
+description = "Agent-callable tools for running simulated-user-research rounds (thin wrapper over the amplifier-simulated-user-research lib)"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [
+    { name = "Microsoft MADE:Explorations Team" },
+]
+dependencies = [
+    "amplifier-simulated-user-research",
+    # Direct git references for the FULL transitive git/URL-dependency
+    # closure of amplifier-simulated-user-research (-> amplifier-module-
+    # pipeline-runner -> {amplifier-foundation, amplifier-module-loop-
+    # pipeline} -> amplifier-unified-llm-client). Required because the
+    # amplifier module activator installs each module via
+    # `uv pip install -e . --no-sources` (uv's *pip-compatible* interface) --
+    # which rejects any URL/git dependency that appears only transitively
+    # unless it is ALSO a direct requirement of the package being installed,
+    # and which does NOT honor [tool.uv] constraint-dependencies /
+    # override-dependencies (those only apply to uv's *project* interface:
+    # `uv lock`/`uv sync` -- confirmed by testing both). Verified live, one
+    # hop at a time: omitting any line here reproduces "Package `X` was
+    # included as a URL dependency. URL dependencies must be expressed as
+    # direct requirements or constraints." for that exact package. If
+    # activation ever fails again with the same error for a NEW package,
+    # add that package's exact dependency string here too.
+    "amplifier-module-pipeline-runner @ git+https://github.com/microsoft/amplifier-bundle-attractor@main#subdirectory=modules/pipeline-runner",
+    "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main",
+    "amplifier-module-loop-pipeline @ git+https://github.com/microsoft/amplifier-bundle-attractor@main#subdirectory=modules/loop-pipeline",
+    "amplifier-unified-llm-client @ git+https://github.com/microsoft/amplifier-bundle-attractor@main#subdirectory=modules/unified-llm-client",
+]
+
+[project.entry-points."amplifier.modules"]
+tool-simulated-user-research = "amplifier_module_tool_simulated_user_research:mount"
+
+[build-system]
+requires = [
+    "hatchling",
+]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
+# Constraint-only pins (NOT direct dependencies) for the transitive git/URL
+# deps that amplifier-simulated-user-research -> amplifier-module-pipeline-runner
+# pulls in. Required because the amplifier module activator installs each
+# module via `uv pip install -e . --no-sources` (uv's legacy pip resolver),
+# which rejects any URL/git dependency that appears only transitively unless
+# it is ALSO present as a direct requirement or a constraint of the package
+# being installed. Verified live by installing incrementally: adding these
+# as [project.dependencies] would be semantically wrong (this module doesn't
+# use amplifier-foundation directly) and duplicating docs already say
+# "expressed as direct requirements OR CONSTRAINTS file" -- constraints are
+# the correct mechanism. If activation ever fails again with the same
+# "Package `X` was included as a URL dependency" error for a NEW package,
+# add that package's exact dependency string here too.
+constraint-dependencies = [
+    "amplifier-module-pipeline-runner @ git+https://github.com/microsoft/amplifier-bundle-attractor@main#subdirectory=modules/pipeline-runner",
+    "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main",
+]
+
+[tool.uv.sources]
+# LOCAL-ONLY for now -- this repo has not been published (see README
+# "Provenance"; task scope was explicitly local work only). Once pushed,
+# replace with a git dependency, e.g.:
+#   amplifier-simulated-user-research = { git = "https://github.com/<org>/amplifier-simulated-user-research", rev = "main" }
+amplifier-simulated-user-research = { path = "../..", editable = true }
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "amplifier_module_tool_simulated_user_research",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=1.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

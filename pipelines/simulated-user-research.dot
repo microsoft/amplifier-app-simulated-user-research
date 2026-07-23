@@ -136,14 +136,21 @@ digraph SimulatedUserResearch {
     //                       below) and rename — DOT graphs are static, so
     //                       "N personas" means "author N persona nodes for
     //                       this roster."
-    //   sur_repo_dir     -- absolute path to this pipeline's own repo dir
-    //                       (the directory containing this .dot file), so
-    //                       the four tool-node browser stages can find
-    //                       scripts/run_browser_node.py. Not auto-derived —
-    //                       the engine has no "my own source directory" var
-    //                       reliably available inside a tool_command string
-    //                       (graph.source_dir is a parser-level Python
-    //                       attribute, not a $-substitutable context key).
+    //   sur_repo_dir     -- absolute path to the amplifier-simulated-user-
+    //                       research REPO ROOT (the directory containing
+    //                       scripts/ and browser-node-agent.yaml) -- NOT the
+    //                       pipelines/ subdirectory this .dot file itself
+    //                       lives in. Needed so the four tool-node browser
+    //                       stages can find scripts/run_browser_node.py. Not
+    //                       auto-derived -- the engine has no "my own source
+    //                       directory" var reliably available inside a
+    //                       tool_command string (graph.source_dir is a
+    //                       parser-level Python attribute, not a
+    //                       $-substitutable context key). The L2/L4 layers
+    //                       (amplifier_simulated_user_research) compute this
+    //                       automatically and pass it as --param
+    //                       sur_repo_dir=...; a direct `attractor run`
+    //                       invocation must still pass it explicitly.
     //   browser_bundle   -- the bundle name or path run_browser_node.py's
     //                       --bundle flag should pass to
     //                       `amplifier run -B <browser_bundle>`. Register

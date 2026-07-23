@@ -1,0 +1,14 @@
+target_url: http://127.0.0.1:8892
+api_key: research-petalcrumb-2026
+seed_command: "python3 scripts/seed_research.py --base-url http://127.0.0.1:8892 --api-key research-petalcrumb-2026"
+seed_cwd: /home/bkrabach/dev/fable-whatsapp/attention-firewall/server
+personas_dir: /home/bkrabach/dev/fable-whatsapp/amplifier-simulated-user-research/personas
+output_dir: /home/bkrabach/dev/fable-whatsapp/verify-shots/research-round-2
+app_source_hint: /home/bkrabach/dev/fable-whatsapp/attention-firewall
+personas:
+  - marisol
+  - dev
+  - ken
+browser_bundle: sur-browser-node
+sur_repo_dir: /home/bkrabach/dev/fable-whatsapp/amplifier-simulated-user-research
+provider: anthropic
