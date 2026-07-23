@@ -144,13 +144,25 @@ digraph SimulatedUserResearch {
         tool_command="test -f \"${output_dir}/capture-notes.md\" && printf done || printf todo"
     ]
 
+    // Turn/timeout budget: manual capture sessions (22 screenshots x 2
+    // viewports, each requiring open/snapshot/click/scroll/screenshot
+    // round-trips) need real headroom. 90 turns / 4200s (70min) gives
+    // margin above the ~80-turn floor this stage needs; the prior cap of
+    // 40 was silently truncating mid-walkthrough (see DEFECT 1 in the
+    // pipeline's incident notes: node reported outcome=success after
+    // exhausting 40 turns, mid-sentence, with capture-notes.md never
+    // written and only a subset of screens/ populated). Turn exhaustion
+    // with no report_outcome call still yields a SUCCESS-shaped result
+    // from this backend (fail-open by design elsewhere in the stack), so
+    // raising the ceiling is necessary but NOT sufficient on its own --
+    // see verify_capture below, which is the actual enforcement.
     capture_screens [
         shape=box,
         class="capture browser",
         label="Visual Capture",
         fidelity="truncate",
-        max_agent_turns="40",
-        timeout="1800",
+        max_agent_turns="90",
+        timeout="4200",
         allow_partial="true",
         max_retries="2",
         prompt="You are conducting the VISUAL CAPTURE stage of a simulated-user-research round for a web product.
@@ -160,6 +172,7 @@ Setup:
 - Target application: $target_url
 - If the app requires a login/API key to view content, use: $api_key
 - Output directory for artifacts: $output_dir  (create it and $output_dir/screens/ if they do not exist)
+- If $output_dir/capture-notes.md already exists with partial content from a prior truncated attempt, treat it as a partial draft: read it, check $output_dir/screens/ for which screens are already captured, and continue from where that attempt left off rather than starting over from scratch.
 
 Task:
 Walk the application screen-by-screen using the agent-browser CLI via bash (agent-browser open / snapshot -ic / click / fill / scroll / screenshot). Visit every primary screen or route a first-time user would encounter (onboarding, main list/feed, a detail view, settings, any consent/permission screens). For EACH screen, capture it at TWO viewport widths:
@@ -170,15 +183,54 @@ Save every screenshot into $output_dir/screens/ with descriptive, sequential fil
 
 While you go, keep a running list of anything that looks broken, confusing, or unfinished: layout breaks, overlapping elements, dead taps, missing loading states, text truncation, or anything a real user would notice as a bug. This is NOT a persona simulation — just an honest, first-pass visual and functional walkthrough note.
 
+IMPORTANT — write incrementally, do not save the write for your last turn: after every 3-4 screens, append what you have so far to $output_dir/capture-notes.md (create it on the first pass) so a truncated session still leaves a usable partial record instead of nothing. Do not treat the write as a final step to do once all screens are captured.
+
 When finished:
-1. Write $output_dir/capture-notes.md with: a numbered list of every screen you captured (with its screenshot filenames), and a separate 'Observed Issues' section listing anything broken you noticed (screen, what's wrong, severity guess: P1/P2/P3).
+1. Ensure $output_dir/capture-notes.md is complete and accurate: a numbered list of every screen you captured (with its screenshot filenames), and a separate 'Observed Issues' section listing anything broken you noticed (screen, what's wrong, severity guess: P1/P2/P3).
 2. Run agent-browser close to end the browser session cleanly — REQUIRED, later stages assume no browser daemon is left running.
 3. Report success once both the screenshots and capture-notes.md exist on disk."
     ]
 
     check_capture -> capture_screens [label="todo", condition="context.tool.last_line=todo"]
     check_capture -> parallel_reviews [label="skip", condition="context.tool.last_line=done"]
-    capture_screens -> parallel_reviews
+    capture_screens -> verify_capture
+
+    // DEFECT 2 fix: the box node above can report outcome=success (turn
+    // exhaustion, no report_outcome call -> engine's fail-open default,
+    // see ROUTING-REFERENCE.md "Failure without report_outcome") without
+    // ever having written its contracted artifact. Nothing upstream of
+    // this point checks the FILE, only the reported status -- so the
+    // pipeline previously marched on toward synthesis with a missing
+    // input. This tool node re-checks the actual file on disk (ground
+    // truth, not the agent's self-report) and routes on
+    // context.tool.last_line:
+    //   ok        -> proceed downstream
+    //   retry     -> jump BACK to capture_screens itself (bounded; a
+    //                fresh/resumed attempt that can see partial
+    //                screens/ + a partial capture-notes.md on disk)
+    //   hard_stop -> hard_stop_capture, which has no retry_target and no
+    //                outgoing edges, so the engine halts the pipeline
+    //                loudly (spec 3.7 step 4) instead of silently
+    //                continuing with a missing artifact.
+    // The retry counter is a file, not an LLM-counted loop (same
+    // deterministic-counter pattern as check_revision_cap below); it is
+    // cleared on success so a later independent run isn't penalized by a
+    // stale count.
+    verify_capture [
+        shape=parallelogram,
+        label="Capture artifact verified?",
+        tool_command="if [ -f \"${output_dir}/capture-notes.md\" ]; then rm -f \"${output_dir}/.capture-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.capture-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.capture-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
+    ]
+
+    verify_capture -> parallel_reviews  [label="ok",        condition="context.tool.last_line=ok"]
+    verify_capture -> capture_screens   [label="retry",      condition="context.tool.last_line=retry"]
+    verify_capture -> hard_stop_capture [label="hard stop",  condition="context.tool.last_line=hard_stop"]
+
+    hard_stop_capture [
+        shape=parallelogram,
+        label="HALT: capture-notes.md missing",
+        tool_command="printf 'FATAL: %s/capture-notes.md was never written after capture_screens ran 3 times (1 initial + 2 retries). Visual capture cannot be considered complete -- downstream design reviews and synthesis have no capture artifact to read. Inspect %s/screens/ for partial output and the node status.json logs to see why capture_screens reported success without writing the file (e.g. max_agent_turns exhaustion mid-walkthrough).\\n' \"${output_dir}\" \"${output_dir}\" 1>&2; exit 1"
+    ]
 
     // ==================================================================
     // STAGE 3 — DESIGN REVIEWS (2 LLM nodes, PARALLEL, no browser)
@@ -232,6 +284,43 @@ Write your complete findings to $output_dir/review-ia.md with these exact sectio
 Report success once review-ia.md is written."
     ]
 
+    // DEFECT 2 fix, review branch: same file-ground-truth verify pattern as
+    // capture/persona (retry bounded at 2, then a loud stderr failure).
+    // IMPORTANT ENGINE-SEMANTICS CAVEAT (documented here so it isn't
+    // mistaken for a full pipeline halt): this node lives INSIDE the
+    // parallel_reviews component branch, which uses
+    // error_policy="continue" + join_policy="wait_all" by deliberate
+    // design (see STAGE 3 header comment above) so one bad review never
+    // blocks the other. _apply_join_policy's wait_all branch returns
+    // SUCCESS/PARTIAL_SUCCESS for the aggregate parallel node even when a
+    // branch's final outcome is FAIL -- PARTIAL_SUCCESS is then treated as
+    // success for routing purposes (spec 4.5), so hitting hard_stop here
+    // fails this ONE branch loudly (visible in logs/status.json/events)
+    // but does NOT halt the overall pipeline the way the linear-chain hard
+    // stops below do. That is intentional, not a gap: synthesis's prompt
+    // (STAGE 5) now has an explicit "Missing inputs" instruction (DEFECT 2c)
+    // that is the actual safety net for a review artifact lost this way --
+    // it will be named as absent in the spec instead of silently omitted.
+    verify_review_ia [
+        shape=parallelogram,
+        label="IA review artifact verified?",
+        tool_command="if [ -f \"${output_dir}/review-ia.md\" ]; then rm -f \"${output_dir}/.review-ia-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.review-ia-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.review-ia-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
+    ]
+
+    verify_review_ia -> reviews_fan_in     [label="ok",       condition="context.tool.last_line=ok"]
+    verify_review_ia -> review_ia          [label="retry",    condition="context.tool.last_line=retry"]
+    verify_review_ia -> fail_review_ia     [label="hard stop", condition="context.tool.last_line=hard_stop"]
+
+    // Terminal WITHIN this branch only (no outgoing edge) -- causes
+    // run_subgraph to return this branch's outcome as FAIL, which the
+    // wait_all/continue join policy folds into an overall
+    // SUCCESS/PARTIAL_SUCCESS for parallel_reviews per the caveat above.
+    fail_review_ia [
+        shape=parallelogram,
+        label="Branch FAIL: review-ia.md missing",
+        tool_command="printf 'FAIL (branch-local): %s/review-ia.md was never written after review_ia ran 3 times (1 initial + 2 retries). This branch is marked failed; the OTHER review branch and the rest of the pipeline continue by design (error_policy=continue). synthesis will list this as a Missing input.\\n' \"${output_dir}\" 1>&2; exit 1"
+    ]
+
     check_review_responsive [
         shape=parallelogram,
         label="Responsive review done?",
@@ -265,16 +354,33 @@ Write your complete findings to $output_dir/review-responsive.md with these exac
 Report success once review-responsive.md is written."
     ]
 
+    // Same file-ground-truth verify pattern as verify_review_ia above.
+    verify_review_responsive [
+        shape=parallelogram,
+        label="Responsive review artifact verified?",
+        tool_command="if [ -f \"${output_dir}/review-responsive.md\" ]; then rm -f \"${output_dir}/.review-responsive-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.review-responsive-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.review-responsive-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
+    ]
+
+    verify_review_responsive -> reviews_fan_in       [label="ok",        condition="context.tool.last_line=ok"]
+    verify_review_responsive -> review_responsive    [label="retry",     condition="context.tool.last_line=retry"]
+    verify_review_responsive -> fail_review_responsive [label="hard stop", condition="context.tool.last_line=hard_stop"]
+
+    fail_review_responsive [
+        shape=parallelogram,
+        label="Branch FAIL: review-responsive.md missing",
+        tool_command="printf 'FAIL (branch-local): %s/review-responsive.md was never written after review_responsive ran 3 times (1 initial + 2 retries). This branch is marked failed; the OTHER review branch and the rest of the pipeline continue by design (error_policy=continue). synthesis will list this as a Missing input.\\n' \"${output_dir}\" 1>&2; exit 1"
+    ]
+
     parallel_reviews -> check_review_ia
     parallel_reviews -> check_review_responsive
 
     check_review_ia -> review_ia   [label="todo", condition="context.tool.last_line=todo"]
     check_review_ia -> reviews_fan_in [label="skip", condition="context.tool.last_line=done"]
-    review_ia -> reviews_fan_in
+    review_ia -> verify_review_ia
 
     check_review_responsive -> review_responsive [label="todo", condition="context.tool.last_line=todo"]
     check_review_responsive -> reviews_fan_in [label="skip", condition="context.tool.last_line=done"]
-    review_responsive -> reviews_fan_in
+    review_responsive -> verify_review_responsive
 
     reviews_fan_in [shape=tripleoctagon, label="Reviews Collected"]
 
@@ -295,13 +401,25 @@ Report success once review-responsive.md is written."
         tool_command="test -f \"${output_dir}/persona-${persona1}.md\" && printf done || printf todo"
     ]
 
+    // Turn/timeout budget: manual persona sessions ran 73-97 agent turns
+    // (real first-run onboarding + task completion + writing a full
+    // friction log, all live in a real browser). The prior cap of 40 was
+    // silently truncating mid-session (DEFECT 1: persona1 hit outcome=success
+    // at 384s with notes truncated mid-sentence -- "Now I have everything I
+    // need to write a comprehensive persona researc..." -- and
+    // persona-marisol.md was NEVER written; same shape for persona2 at 150s).
+    // 110 turns / 3600s(60min) gives headroom above the observed 73-97 turn
+    // range. allow_partial stays true for graceful degradation WITHIN a
+    // single attempt's retry budget (spec 3.5's own PARTIAL_SUCCESS path),
+    // but that is now backstopped by verify_persona1 below, which checks the
+    // actual file rather than trusting the reported status.
     persona1 [
         shape=box,
         class="persona browser",
         label="Persona Session 1",
         fidelity="truncate",
-        max_agent_turns="40",
-        timeout="1800",
+        max_agent_turns="110",
+        timeout="3600",
         allow_partial="true",
         max_retries="1",
         prompt="You are conducting a PERSONA SESSION as part of a simulated-user-research round. You embody ONE persona doing a TRUE first-run of the product in a real browser — this is NOT a review of screenshots, you must actually drive the app live via the agent-browser CLI.
@@ -309,11 +427,14 @@ Report success once review-responsive.md is written."
 Setup:
 1. As your first action, run: agent-browser close --all  (clears any stale browser daemon; harmless if none running — REQUIRED, since persona sessions run one at a time and must never overlap another session's browser state)
 2. Read your persona brief completely: $personas_dir/$persona1.md — this defines who you are, your goals, your technical comfort level, and what would make you say yes or no to this product. Adopt this persona fully for the rest of the session; do not break character in your actions or your written log.
-3. Open a brand-new, logged-out browser session (do not reuse any saved cookies/state): agent-browser open $target_url
-4. If the product requires an account/API key to proceed past onboarding, use: $api_key — exactly as your persona would encounter it (only when the product's own flow asks for it, not before, if your persona is doing a genuine first run).
+3. If $output_dir/persona-$persona1.md already exists from a prior truncated attempt, treat it as an incomplete draft: read it to see how far you got, then continue/redo the remaining tasks rather than starting completely over.
+4. Open a brand-new, logged-out browser session (do not reuse any saved cookies/state): agent-browser open $target_url
+5. If the product requires an account/API key to proceed past onboarding, use: $api_key — exactly as your persona would encounter it (only when the product's own flow asks for it, not before, if your persona is doing a genuine first run).
 
 Task:
 Act as this persona doing REAL first-run onboarding and the concrete tasks described in your brief. Read what's on screen the way a real person would — don't just execute the minimum clicks to finish. Notice friction: confusing copy, unclear next steps, dead taps, missing feedback, anything that would make a real user hesitate, get lost, or quit. Also notice delights: anything that clearly worked well or exceeded expectations.
+
+IMPORTANT — budget your turns, do not leave the write for the very end: plan on roughly 25% of your turn budget going to WRITING the report, not just doing tasks. Write $output_dir/persona-$persona1.md incrementally as sections become ready (e.g. write ## Persona and start ## Friction Log as soon as onboarding is done, append entries as you complete each task) rather than composing the whole document from memory in your final turn. A partial-but-saved file is far more useful than a complete draft that never got written because turns ran out.
 
 When finished, close your browser: agent-browser close
 
@@ -339,7 +460,31 @@ Report success once persona-$persona1.md is written."
 
     check_persona1 -> persona1 [label="todo", condition="context.tool.last_line=todo"]
     check_persona1 -> check_persona2 [label="skip", condition="context.tool.last_line=done"]
-    persona1 -> check_persona2
+    persona1 -> verify_persona1
+
+    // DEFECT 2 fix, persona branch: file-ground-truth verify + bounded
+    // self-retry + loud hard stop, same mechanics as verify_capture. This
+    // sits in the STRICTLY SEQUENTIAL persona chain (not a parallel
+    // branch), so hard_stop_persona1 halting here halts the WHOLE
+    // pipeline (spec 3.7 step 4, no retry_target/fallback_retry_target
+    // reachable from it) -- correct, since a missing persona artifact is
+    // a genuine gap in the sequential chain's contract, unlike the
+    // parallel review branches above where a sibling can still complete.
+    verify_persona1 [
+        shape=parallelogram,
+        label="Persona 1 artifact verified?",
+        tool_command="if [ -f \"${output_dir}/persona-${persona1}.md\" ]; then rm -f \"${output_dir}/.persona1-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.persona1-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.persona1-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
+    ]
+
+    verify_persona1 -> check_persona2   [label="ok",       condition="context.tool.last_line=ok"]
+    verify_persona1 -> persona1         [label="retry",    condition="context.tool.last_line=retry"]
+    verify_persona1 -> hard_stop_persona1 [label="hard stop", condition="context.tool.last_line=hard_stop"]
+
+    hard_stop_persona1 [
+        shape=parallelogram,
+        label="HALT: persona-1 artifact missing",
+        tool_command="printf 'FATAL: %s/persona-%s.md was never written after persona1 ran 3 times (1 initial + 2 retries). This is the sequential persona chain -- synthesis needs every persona report. Inspect node status.json logs to see why persona1 reported success without writing the file (e.g. max_agent_turns exhaustion mid-session).\\n' \"${output_dir}\" \"${persona1}\" 1>&2; exit 1"
+    ]
 
     check_persona2 [
         shape=parallelogram,
@@ -352,8 +497,8 @@ Report success once persona-$persona1.md is written."
         class="persona browser",
         label="Persona Session 2",
         fidelity="truncate",
-        max_agent_turns="40",
-        timeout="1800",
+        max_agent_turns="110",
+        timeout="3600",
         allow_partial="true",
         max_retries="1",
         prompt="You are conducting a PERSONA SESSION as part of a simulated-user-research round. You embody ONE persona doing a TRUE first-run of the product in a real browser — this is NOT a review of screenshots, you must actually drive the app live via the agent-browser CLI.
@@ -361,11 +506,14 @@ Report success once persona-$persona1.md is written."
 Setup:
 1. As your first action, run: agent-browser close --all  (clears any stale browser daemon; harmless if none running — REQUIRED, since persona sessions run one at a time and must never overlap another session's browser state)
 2. Read your persona brief completely: $personas_dir/$persona2.md — this defines who you are, your goals, your technical comfort level, and what would make you say yes or no to this product. Adopt this persona fully for the rest of the session; do not break character in your actions or your written log.
-3. Open a brand-new, logged-out browser session (do not reuse any saved cookies/state): agent-browser open $target_url
-4. If the product requires an account/API key to proceed past onboarding, use: $api_key — exactly as your persona would encounter it (only when the product's own flow asks for it, not before, if your persona is doing a genuine first run).
+3. If $output_dir/persona-$persona2.md already exists from a prior truncated attempt, treat it as an incomplete draft: read it to see how far you got, then continue/redo the remaining tasks rather than starting completely over.
+4. Open a brand-new, logged-out browser session (do not reuse any saved cookies/state): agent-browser open $target_url
+5. If the product requires an account/API key to proceed past onboarding, use: $api_key — exactly as your persona would encounter it (only when the product's own flow asks for it, not before, if your persona is doing a genuine first run).
 
 Task:
 Act as this persona doing REAL first-run onboarding and the concrete tasks described in your brief. Read what's on screen the way a real person would — don't just execute the minimum clicks to finish. Notice friction: confusing copy, unclear next steps, dead taps, missing feedback, anything that would make a real user hesitate, get lost, or quit. Also notice delights: anything that clearly worked well or exceeded expectations.
+
+IMPORTANT — budget your turns, do not leave the write for the very end: plan on roughly 25% of your turn budget going to WRITING the report, not just doing tasks. Write $output_dir/persona-$persona2.md incrementally as sections become ready (e.g. write ## Persona and start ## Friction Log as soon as onboarding is done, append entries as you complete each task) rather than composing the whole document from memory in your final turn. A partial-but-saved file is far more useful than a complete draft that never got written because turns ran out.
 
 When finished, close your browser: agent-browser close
 
@@ -391,7 +539,23 @@ Report success once persona-$persona2.md is written."
 
     check_persona2 -> persona2 [label="todo", condition="context.tool.last_line=todo"]
     check_persona2 -> check_persona3 [label="skip", condition="context.tool.last_line=done"]
-    persona2 -> check_persona3
+    persona2 -> verify_persona2
+
+    verify_persona2 [
+        shape=parallelogram,
+        label="Persona 2 artifact verified?",
+        tool_command="if [ -f \"${output_dir}/persona-${persona2}.md\" ]; then rm -f \"${output_dir}/.persona2-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.persona2-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.persona2-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
+    ]
+
+    verify_persona2 -> check_persona3   [label="ok",       condition="context.tool.last_line=ok"]
+    verify_persona2 -> persona2         [label="retry",    condition="context.tool.last_line=retry"]
+    verify_persona2 -> hard_stop_persona2 [label="hard stop", condition="context.tool.last_line=hard_stop"]
+
+    hard_stop_persona2 [
+        shape=parallelogram,
+        label="HALT: persona-2 artifact missing",
+        tool_command="printf 'FATAL: %s/persona-%s.md was never written after persona2 ran 3 times (1 initial + 2 retries). This is the sequential persona chain -- synthesis needs every persona report. Inspect node status.json logs to see why persona2 reported success without writing the file (e.g. max_agent_turns exhaustion mid-session).\\n' \"${output_dir}\" \"${persona2}\" 1>&2; exit 1"
+    ]
 
     check_persona3 [
         shape=parallelogram,
@@ -404,8 +568,8 @@ Report success once persona-$persona2.md is written."
         class="persona browser",
         label="Persona Session 3",
         fidelity="truncate",
-        max_agent_turns="40",
-        timeout="1800",
+        max_agent_turns="110",
+        timeout="3600",
         allow_partial="true",
         max_retries="1",
         prompt="You are conducting a PERSONA SESSION as part of a simulated-user-research round. You embody ONE persona doing a TRUE first-run of the product in a real browser — this is NOT a review of screenshots, you must actually drive the app live via the agent-browser CLI.
@@ -413,11 +577,14 @@ Report success once persona-$persona2.md is written."
 Setup:
 1. As your first action, run: agent-browser close --all  (clears any stale browser daemon; harmless if none running — REQUIRED, since persona sessions run one at a time and must never overlap another session's browser state)
 2. Read your persona brief completely: $personas_dir/$persona3.md — this defines who you are, your goals, your technical comfort level, and what would make you say yes or no to this product. Adopt this persona fully for the rest of the session; do not break character in your actions or your written log.
-3. Open a brand-new, logged-out browser session (do not reuse any saved cookies/state): agent-browser open $target_url
-4. If the product requires an account/API key to proceed past onboarding, use: $api_key — exactly as your persona would encounter it (only when the product's own flow asks for it, not before, if your persona is doing a genuine first run).
+3. If $output_dir/persona-$persona3.md already exists from a prior truncated attempt, treat it as an incomplete draft: read it to see how far you got, then continue/redo the remaining tasks rather than starting completely over.
+4. Open a brand-new, logged-out browser session (do not reuse any saved cookies/state): agent-browser open $target_url
+5. If the product requires an account/API key to proceed past onboarding, use: $api_key — exactly as your persona would encounter it (only when the product's own flow asks for it, not before, if your persona is doing a genuine first run).
 
 Task:
 Act as this persona doing REAL first-run onboarding and the concrete tasks described in your brief. Read what's on screen the way a real person would — don't just execute the minimum clicks to finish. Notice friction: confusing copy, unclear next steps, dead taps, missing feedback, anything that would make a real user hesitate, get lost, or quit. Also notice delights: anything that clearly worked well or exceeded expectations.
+
+IMPORTANT — budget your turns, do not leave the write for the very end: plan on roughly 25% of your turn budget going to WRITING the report, not just doing tasks. Write $output_dir/persona-$persona3.md incrementally as sections become ready (e.g. write ## Persona and start ## Friction Log as soon as onboarding is done, append entries as you complete each task) rather than composing the whole document from memory in your final turn. A partial-but-saved file is far more useful than a complete draft that never got written because turns ran out.
 
 When finished, close your browser: agent-browser close
 
@@ -443,7 +610,23 @@ Report success once persona-$persona3.md is written."
 
     check_persona3 -> persona3 [label="todo", condition="context.tool.last_line=todo"]
     check_persona3 -> check_synthesis [label="skip", condition="context.tool.last_line=done"]
-    persona3 -> check_synthesis
+    persona3 -> verify_persona3
+
+    verify_persona3 [
+        shape=parallelogram,
+        label="Persona 3 artifact verified?",
+        tool_command="if [ -f \"${output_dir}/persona-${persona3}.md\" ]; then rm -f \"${output_dir}/.persona3-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.persona3-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.persona3-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
+    ]
+
+    verify_persona3 -> check_synthesis  [label="ok",       condition="context.tool.last_line=ok"]
+    verify_persona3 -> persona3         [label="retry",    condition="context.tool.last_line=retry"]
+    verify_persona3 -> hard_stop_persona3 [label="hard stop", condition="context.tool.last_line=hard_stop"]
+
+    hard_stop_persona3 [
+        shape=parallelogram,
+        label="HALT: persona-3 artifact missing",
+        tool_command="printf 'FATAL: %s/persona-%s.md was never written after persona3 ran 3 times (1 initial + 2 retries). This is the sequential persona chain -- synthesis needs every persona report. Inspect node status.json logs to see why persona3 reported success without writing the file (e.g. max_agent_turns exhaustion mid-session).\\n' \"${output_dir}\" \"${persona3}\" 1>&2; exit 1"
+    ]
 
     // ==================================================================
     // STAGE 5 — SYNTHESIS
@@ -472,7 +655,7 @@ Report success once persona-$persona3.md is written."
         max_retries="2",
         prompt="You are conducting the SYNTHESIS stage of a simulated-user-research round — the final consolidation before human review.
 
-Read EVERY artifact in $output_dir:
+Read EVERY artifact in $output_dir that EXISTS (check each path before reading it — do not assume all six are present):
   - $output_dir/capture-notes.md
   - $output_dir/review-ia.md
   - $output_dir/review-responsive.md
@@ -481,13 +664,17 @@ Read EVERY artifact in $output_dir:
   - $output_dir/persona-$persona3.md
   - (if present from a prior revision pass) $output_dir/research-spec.md — if this file already exists, treat your prior version as a DRAFT to revise, not a blank slate. If a human provided feedback in this turn (it will appear above this prompt as 'Human response at gate ...'), that feedback is the primary driver of what to change — read it carefully and apply it.
 
+DEFENSIVE INPUT CHECK — do this first, before synthesizing: the upstream pipeline enforces file-existence guards on capture and each persona (they hard-stop the whole run if missing), but the two design-review artifacts (review-ia.md, review-responsive.md) run in a parallel branch with error_policy=continue, so it is possible to reach this stage with one or both of them absent. Never silently proceed as if a missing artifact simply doesn't exist / was never in scope. For EVERY one of the six expected artifact paths above that is NOT present on disk, record it under a top-level '## Missing inputs' heading (see Output below) naming the exact path and stating that this round's synthesis proceeded without it — do not fabricate or infer its content, and do not quietly omit any cross-reference claims that would have depended on it.
+
 Task:
-Consolidate all findings into a SINGLE implementation-ready spec. Cross-reference across artifacts: a bug or friction point independently observed by MULTIPLE personas or BOTH design reviews is a P1 — call this out explicitly as 'cross-persona confirmed' or 'confirmed by N/3 personas'. Do not simply concatenate the source documents — synthesize, deduplicate, and prioritize.
+Consolidate all findings into a SINGLE implementation-ready spec, built ONLY from the artifacts that actually exist. Cross-reference across artifacts: a bug or friction point independently observed by MULTIPLE personas or BOTH design reviews is a P1 — call this out explicitly as 'cross-persona confirmed' or 'confirmed by N/3 personas' (adjust the denominator honestly if a source is missing per your Missing inputs note). Do not simply concatenate the source documents — synthesize, deduplicate, and prioritize.
 
 Output:
 Write (or overwrite, on a revision pass) $output_dir/research-spec.md with these exact sections:
   ## Summary
   (3-5 sentences: overall health, biggest risk, biggest opportunity)
+  ## Missing inputs
+  (list any of the six expected artifact paths above that were absent when this synthesis ran, and what that means for the confidence of any related findings below; write 'None — all expected inputs were present.' if nothing was missing)
   ## P1 Bugs (cross-persona/cross-review confirmed)
   (numbered; each with description, which personas/reviews confirmed it, suggested fix)
   ## Prioritized Changes
@@ -497,14 +684,41 @@ Write (or overwrite, on a revision pass) $output_dir/research-spec.md with these
   ## Parked Items
   (real issues that are lower priority or out of scope for this round — do not lose them, just don't block on them)
   ## Sources
-  (list every artifact you read, so a human can trace any claim back to its evidence)
+  (list every artifact you actually read, so a human can trace any claim back to its evidence)
 
 Report success once research-spec.md is written."
     ]
 
     check_synthesis -> synthesis [label="todo", condition="context.tool.last_line=todo"]
     check_synthesis -> gate [label="skip", condition="context.tool.last_line=done"]
-    synthesis -> gate
+    synthesis -> verify_synthesis
+
+    // DEFECT 2 fix, synthesis: requirement (b) is EVERY artifact-producing
+    // box node, and synthesis is one, despite already carrying
+    // goal_gate=true + retry_target="synthesis". That existing mechanism
+    // (spec 3.4) only re-checks the node's REPORTED outcome.status at
+    // pipeline-exit time -- it is the same class of gap as capture/persona
+    // (a node can report success without having written the file). This
+    // file-ground-truth check is additive defense-in-depth ahead of the
+    // human gate: same ok/retry/hard_stop shape as the other stages, and
+    // its "retry" edge reuses the SAME self-retry target the goal_gate
+    // already establishes (synthesis), so the two mechanisms cooperate
+    // rather than fight.
+    verify_synthesis [
+        shape=parallelogram,
+        label="Synthesis artifact verified?",
+        tool_command="if [ -f \"${output_dir}/research-spec.md\" ]; then rm -f \"${output_dir}/.synthesis-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.synthesis-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.synthesis-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
+    ]
+
+    verify_synthesis -> gate               [label="ok",        condition="context.tool.last_line=ok"]
+    verify_synthesis -> synthesis          [label="retry",     condition="context.tool.last_line=retry"]
+    verify_synthesis -> hard_stop_synthesis [label="hard stop", condition="context.tool.last_line=hard_stop"]
+
+    hard_stop_synthesis [
+        shape=parallelogram,
+        label="HALT: research-spec.md missing",
+        tool_command="printf 'FATAL: %s/research-spec.md was never written after synthesis ran 3 times (1 initial + 2 retries). There is nothing to show the human at the approval gate. Inspect node status.json logs to see why synthesis reported success without writing the file.\\n' \"${output_dir}\" 1>&2; exit 1"
+    ]
 
     // ==================================================================
     // STAGE 6 — HUMAN GATE (approve / revise, capped / end)
