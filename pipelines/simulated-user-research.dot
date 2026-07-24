@@ -119,13 +119,38 @@
 //   "Missing inputs: None." Every check_*/verify_* node below now calls
 //   scripts/validate_artifact.py <type> <path> [--screens-dir D] [--run-id
 //   R] [--findings-json F] instead -- ONE shared, content-aware contract per
-//   artifact type, called with THE SAME arguments from both the skip-guard
-//   AND the quality-gate. That symmetry is the fix: a partial artifact now
-//   FAILS check_*'s skip-guard too, so the stage is not skipped, it re-runs,
-//   and it heals via the partial-draft-resume mechanism already built into
+//   artifact type, called from both the skip-guard AND the quality-gate.
+//   That symmetry is the fix: a partial artifact now FAILS check_*'s
+//   skip-guard too, so the stage is not skipped, it re-runs, and it heals
+//   via the partial-draft-resume mechanism already built into
 //   run_browser_node.py. See that script's module docstring for the full
 //   per-type contract (required sections, cited-screenshot existence,
-//   placeholder rejection, Run ID staleness, findings.json schema).
+//   placeholder rejection, Run ID well-formedness, findings.json schema).
+//
+// * RESUME vs EXACT RUN ID CHECKING (4th council round -- the ONE
+//   deliberate argument asymmetry between check_* and verify_*): a fresh
+//   `attractor run` with a NEW run_id must still be able to resume past
+//   a prior run's complete artifacts -- that is the entire point of the
+//   check_*/verify_* skip-guard pattern. But the very first version of
+//   the Run ID staleness check (previous bullet) applied ONE strict
+//   comparison in BOTH check_* and verify_*, which broke exactly that:
+//   a fresh run's check_capture rejected a complete, well-formed
+//   capture-notes.md stamped with an EARLIER run's run_id as "stale",
+//   forcing capture (and everything downstream) to re-run in full,
+//   destroying both cheap resume and the read-spec/re-run/answer-the-gate
+//   workflow. The fix is a mode flag on validate_artifact.py:
+//     - check_* (skip-guards) call WITHOUT --require-exact (RESUME mode):
+//       any WELL-FORMED r-YYYYMMDD-HHMMSS stamp passes, from ANY run --
+//       exactly what makes resuming past a prior run's artifacts possible.
+//     - verify_* (fresh-production quality gates) call WITH
+//       --require-exact (EXACT mode): the artifact's Run ID must equal
+//       THIS run's run_id, or it fails as a stale write -- this is real,
+//       load-bearing stale-write detection for a node that just claimed
+//       to have (re)produced the artifact THIS run.
+//   Both modes still reject an empty/placeholder/"unknown" Run ID and
+//   every other content-contract failure -- only the cross-run identity
+//   comparison is mode-dependent. See validate_artifact.py's module
+//   docstring ("RESUME MODE vs EXACT MODE") for the full reasoning.
 //
 // * BROWSER-RAN PROOF: a dead target_url (or a model that narrates a
 //   plausible-looking session without ever touching the browser) used to be
@@ -197,10 +222,15 @@ digraph SimulatedUserResearch {
     //                       _stamp_header; via prompt substitution for the
     //                       box nodes) and validated by
     //                       scripts/validate_artifact.py on every
-    //                       check_*/verify_* gate -- an artifact whose Run
-    //                       ID doesn't match this run's is treated as stale
-    //                       and fails its gate rather than being silently
-    //                       accepted as already-done.
+    //                       check_*/verify_* gate. verify_* gates pass
+    //                       --require-exact: an artifact whose Run ID
+    //                       doesn't match THIS run's is treated as a
+    //                       stale write and fails. check_* skip-guards
+    //                       omit --require-exact (resume mode): any
+    //                       well-formed r-* stamp from a PRIOR run passes,
+    //                       so a fresh run can still resume past already-
+    //                       complete artifacts. See the header's "RESUME
+    //                       vs EXACT RUN ID CHECKING" note above.
     //   target_url       -- base URL of the scratch instance to test
     //   api_key          -- API key/credential personas use to log in
     //   seed_command     -- full shell command (with its own flags) that
@@ -360,7 +390,7 @@ digraph SimulatedUserResearch {
     verify_capture [
         shape=parallelogram,
         label="Capture artifact verified?",
-        tool_command="if python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" capture \"${output_dir}/capture-notes.md\" --screens-dir \"${output_dir}/screens\" --run-id \"${run_id}\"; then rm -f \"${output_dir}/.capture-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.capture-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); if printf '%s' \"$cnt\" > \"${output_dir}/.capture-retry-count.tmp\" && mv \"${output_dir}/.capture-retry-count.tmp\" \"${output_dir}/.capture-retry-count\"; then if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; else printf hard_stop; fi; fi"
+        tool_command="if python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" capture \"${output_dir}/capture-notes.md\" --screens-dir \"${output_dir}/screens\" --run-id \"${run_id}\" --require-exact; then rm -f \"${output_dir}/.capture-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.capture-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); if printf '%s' \"$cnt\" > \"${output_dir}/.capture-retry-count.tmp\" && mv \"${output_dir}/.capture-retry-count.tmp\" \"${output_dir}/.capture-retry-count\"; then if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; else printf hard_stop; fi; fi"
     ]
 
     verify_capture -> parallel_reviews  [label="ok",        condition="context.tool.last_line=ok"]
@@ -449,7 +479,7 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
     verify_review_ia [
         shape=parallelogram,
         label="IA review artifact verified?",
-        tool_command="if python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" review \"${output_dir}/review-ia.md\" --run-id \"${run_id}\"; then rm -f \"${output_dir}/.review-ia-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.review-ia-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); if printf '%s' \"$cnt\" > \"${output_dir}/.review-ia-retry-count.tmp\" && mv \"${output_dir}/.review-ia-retry-count.tmp\" \"${output_dir}/.review-ia-retry-count\"; then if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; else printf hard_stop; fi; fi"
+        tool_command="if python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" review \"${output_dir}/review-ia.md\" --run-id \"${run_id}\" --require-exact; then rm -f \"${output_dir}/.review-ia-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.review-ia-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); if printf '%s' \"$cnt\" > \"${output_dir}/.review-ia-retry-count.tmp\" && mv \"${output_dir}/.review-ia-retry-count.tmp\" \"${output_dir}/.review-ia-retry-count\"; then if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; else printf hard_stop; fi; fi"
     ]
 
     verify_review_ia -> reviews_fan_in     [label="ok",       condition="context.tool.last_line=ok"]
@@ -507,7 +537,7 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
     verify_review_responsive [
         shape=parallelogram,
         label="Responsive review artifact verified?",
-        tool_command="if python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" review \"${output_dir}/review-responsive.md\" --run-id \"${run_id}\"; then rm -f \"${output_dir}/.review-responsive-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.review-responsive-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); if printf '%s' \"$cnt\" > \"${output_dir}/.review-responsive-retry-count.tmp\" && mv \"${output_dir}/.review-responsive-retry-count.tmp\" \"${output_dir}/.review-responsive-retry-count\"; then if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; else printf hard_stop; fi; fi"
+        tool_command="if python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" review \"${output_dir}/review-responsive.md\" --run-id \"${run_id}\" --require-exact; then rm -f \"${output_dir}/.review-responsive-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.review-responsive-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); if printf '%s' \"$cnt\" > \"${output_dir}/.review-responsive-retry-count.tmp\" && mv \"${output_dir}/.review-responsive-retry-count.tmp\" \"${output_dir}/.review-responsive-retry-count\"; then if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; else printf hard_stop; fi; fi"
     ]
 
     verify_review_responsive -> reviews_fan_in       [label="ok",        condition="context.tool.last_line=ok"]
@@ -592,7 +622,7 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
     verify_persona1 [
         shape=parallelogram,
         label="Persona 1 artifact verified?",
-        tool_command="if python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" persona \"${output_dir}/persona-${persona1}.md\" --run-id \"${run_id}\"; then rm -f \"${output_dir}/.persona1-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.persona1-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); if printf '%s' \"$cnt\" > \"${output_dir}/.persona1-retry-count.tmp\" && mv \"${output_dir}/.persona1-retry-count.tmp\" \"${output_dir}/.persona1-retry-count\"; then if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; else printf hard_stop; fi; fi"
+        tool_command="if python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" persona \"${output_dir}/persona-${persona1}.md\" --run-id \"${run_id}\" --require-exact; then rm -f \"${output_dir}/.persona1-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.persona1-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); if printf '%s' \"$cnt\" > \"${output_dir}/.persona1-retry-count.tmp\" && mv \"${output_dir}/.persona1-retry-count.tmp\" \"${output_dir}/.persona1-retry-count\"; then if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; else printf hard_stop; fi; fi"
     ]
 
     verify_persona1 -> check_persona2   [label="ok",       condition="context.tool.last_line=ok"]
@@ -629,7 +659,7 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
     verify_persona2 [
         shape=parallelogram,
         label="Persona 2 artifact verified?",
-        tool_command="if python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" persona \"${output_dir}/persona-${persona2}.md\" --run-id \"${run_id}\"; then rm -f \"${output_dir}/.persona2-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.persona2-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); if printf '%s' \"$cnt\" > \"${output_dir}/.persona2-retry-count.tmp\" && mv \"${output_dir}/.persona2-retry-count.tmp\" \"${output_dir}/.persona2-retry-count\"; then if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; else printf hard_stop; fi; fi"
+        tool_command="if python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" persona \"${output_dir}/persona-${persona2}.md\" --run-id \"${run_id}\" --require-exact; then rm -f \"${output_dir}/.persona2-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.persona2-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); if printf '%s' \"$cnt\" > \"${output_dir}/.persona2-retry-count.tmp\" && mv \"${output_dir}/.persona2-retry-count.tmp\" \"${output_dir}/.persona2-retry-count\"; then if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; else printf hard_stop; fi; fi"
     ]
 
     verify_persona2 -> check_persona3   [label="ok",       condition="context.tool.last_line=ok"]
@@ -666,7 +696,7 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
     verify_persona3 [
         shape=parallelogram,
         label="Persona 3 artifact verified?",
-        tool_command="if python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" persona \"${output_dir}/persona-${persona3}.md\" --run-id \"${run_id}\"; then rm -f \"${output_dir}/.persona3-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.persona3-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); if printf '%s' \"$cnt\" > \"${output_dir}/.persona3-retry-count.tmp\" && mv \"${output_dir}/.persona3-retry-count.tmp\" \"${output_dir}/.persona3-retry-count\"; then if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; else printf hard_stop; fi; fi"
+        tool_command="if python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" persona \"${output_dir}/persona-${persona3}.md\" --run-id \"${run_id}\" --require-exact; then rm -f \"${output_dir}/.persona3-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.persona3-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); if printf '%s' \"$cnt\" > \"${output_dir}/.persona3-retry-count.tmp\" && mv \"${output_dir}/.persona3-retry-count.tmp\" \"${output_dir}/.persona3-retry-count\"; then if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; else printf hard_stop; fi; fi"
     ]
 
     verify_persona3 -> check_synthesis  [label="ok",       condition="context.tool.last_line=ok"]
@@ -687,11 +717,37 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
     // (gate_feedback -> synthesis, below) bypasses this guard entirely and
     // always re-runs synthesis — that is deliberate; a revision must
     // overwrite research-spec.md, not skip because it already exists.
+    //
+    // RESUME-SAFE HASH CLEANUP (4th council round): the "todo" branch
+    // below now also clears any leftover .pre-revision-spec-hash BEFORE
+    // proceeding to a fresh main-line synthesis run. Reasoning: that hash
+    // file is a snapshot placed ONLY by snapshot_spec_hash, immediately
+    // before a genuine human-requested revision's synthesis call, and is
+    // meant to be consumed by check_revision_progress right after THAT
+    // SAME synthesis call finishes. But if a prior run crashed between
+    // snapshot_spec_hash writing it and check_revision_progress consuming
+    // it (e.g. killed mid-revision), the file survives on disk. A fresh
+    // resumed run reaching check_synthesis's "todo" edge (a genuine
+    // main-line first pass in THIS run, no human feedback involved) would
+    // otherwise carry that orphaned snapshot forward into ITS
+    // verify_synthesis -> check_revision_progress hop, which has no way
+    // to tell "stale leftover from an abandoned revision in a DIFFERENT
+    // run" apart from "a real snapshot from a revision in progress THIS
+    // run" -- both just mean "the file exists." Best case that ambiguity
+    // is harmless (the freshly synthesized content merely happens to
+    // differ from the orphaned hash); worst case a coincidental hash
+    // match hard-stops a legitimate first pass with a nonsensical
+    // "revision produced no change" fatal, for a revision that was never
+    // requested in this run. Clearing the file here removes the
+    // ambiguity at its source: only snapshot_spec_hash (reachable solely
+    // via gate_feedback, i.e. an actual human revision request in the
+    // CURRENT run's control flow) may cause the file to exist when
+    // check_revision_progress runs.
 
     check_synthesis [
         shape=parallelogram,
         label="Spec exists?",
-        tool_command="python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" spec \"${output_dir}/research-spec.md\" --run-id \"${run_id}\" --findings-json \"${output_dir}/findings.json\" >/dev/null 2>&1 && printf done || printf todo"
+        tool_command="python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" spec \"${output_dir}/research-spec.md\" --run-id \"${run_id}\" --findings-json \"${output_dir}/findings.json\" >/dev/null 2>&1 && printf done || { rm -f \"${output_dir}/.pre-revision-spec-hash\"; printf todo; }"
     ]
 
     synthesis [
@@ -795,7 +851,7 @@ Before reporting anything, verify your own work with tool calls: run `wc -c $out
     verify_synthesis [
         shape=parallelogram,
         label="Synthesis artifact verified?",
-        tool_command="if python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" spec \"${output_dir}/research-spec.md\" --run-id \"${run_id}\" --findings-json \"${output_dir}/findings.json\"; then rm -f \"${output_dir}/.synthesis-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.synthesis-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); if printf '%s' \"$cnt\" > \"${output_dir}/.synthesis-retry-count.tmp\" && mv \"${output_dir}/.synthesis-retry-count.tmp\" \"${output_dir}/.synthesis-retry-count\"; then if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; else printf hard_stop; fi; fi"
+        tool_command="if python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" spec \"${output_dir}/research-spec.md\" --run-id \"${run_id}\" --findings-json \"${output_dir}/findings.json\" --require-exact; then rm -f \"${output_dir}/.synthesis-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.synthesis-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); if printf '%s' \"$cnt\" > \"${output_dir}/.synthesis-retry-count.tmp\" && mv \"${output_dir}/.synthesis-retry-count.tmp\" \"${output_dir}/.synthesis-retry-count\"; then if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; else printf hard_stop; fi; fi"
     ]
 
     verify_synthesis -> check_revision_progress [label="ok",   condition="context.tool.last_line=ok"]

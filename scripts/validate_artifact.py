@@ -20,7 +20,7 @@ partial artifact above the floor could never heal -- it entombed itself.
 THE FIX IS THE CONTRACT, NOT THE FLOOR: this script replaces the inline
 ``wc -c`` content judgment in both check_* (skip-guard) and verify_*
 (quality-gate) tool_commands with ONE shared, content-aware contract per
-artifact type. Both call sites invoke the SAME script with the SAME
+artifact type. Both call sites invoke the SAME script with mostly the SAME
 arguments -- that symmetry is what fixes the entombing defect: a partial
 artifact now FAILS check_*'s skip-guard too (not just verify_*'s quality
 gate), so the stage is not skipped, it re-runs, and it heals via the
@@ -29,6 +29,29 @@ run_browser_node.py (build_capture_instruction/build_persona_instruction
 inject the existing partial content back into the next attempt's prompt
 as a continuation point, not a fresh start).
 
+RESUME MODE vs EXACT MODE (post-showcase hardening, 4th council round):
+the Run ID check has two distinct jobs that a single strict comparison
+conflated, and that conflation broke resume. check_*'s skip-guard exists
+to answer "is there already a complete, well-formed artifact I can reuse
+from ANY prior run?" -- that is what resume IS. verify_*'s quality gate
+exists to answer "did THIS run's node just genuinely (re)produce this
+exact artifact?" -- catching a stale write is real value there (a retry
+that silently reused an old file instead of actually rerunning). One
+--run-id/exact-match check cannot serve both jobs: strict comparison in
+check_* rejects a perfectly good prior-run artifact and forces a full,
+expensive re-run (destroying cheap resume AND the "answer the gate"
+workflow of reading a spec, re-running interactively, and answering);
+loose comparison in verify_* would blind it to real stale-write bugs.
+
+The split: pass ``--require-exact`` for a STRICT check (verify_* nodes --
+fresh-production gates) where the artifact's "Run ID: <value>" field must
+equal ``--run-id`` exactly. OMIT ``--require-exact`` for a RESUME check
+(check_* nodes -- skip-guards) where any WELL-FORMED ``r-<8 digits>-<6
+digits>`` stamp passes, regardless of which run produced it. Both modes
+still reject an empty/placeholder/"unknown" Run ID and every other
+content-contract failure (missing sections, uncited screenshots, etc.) --
+resume mode only relaxes the cross-run identity comparison, nothing else.
+
 CONTRACT PER ARTIFACT TYPE (see the individual validate_* functions for
 the authoritative checks; this is a summary):
 
@@ -36,10 +59,16 @@ the authoritative checks; this is a summary):
     - a cheap byte-size floor as the FIRST, fast-fail check (see MIN_SIZE)
     - no placeholder markers anywhere in the body: "to be completed",
       "(in progress)", or a bare "TODO" token
-    - a "Run ID: <value>" field whose value is non-empty and not the
-      literal word "unknown" (case-insensitive) -- and, when --run-id is
-      given, matches this run's run_id exactly (catches a stale artifact
-      left over from a different/earlier run being silently reused)
+    - a "Run ID: <value>" field whose value is non-empty, not the literal
+      word "unknown" (case-insensitive), and matches the well-formed
+      ``r-YYYYMMDD-HHMMSS`` shape -- and, when --run-id is given:
+        * with --require-exact: value must equal --run-id exactly (a
+          mismatch is treated as a stale artifact left over from a
+          different run and FAILS)
+        * without --require-exact (the default -- resume mode): any
+          well-formed r-* stamp PASSES even if it doesn't match --run-id
+          -- this is what lets a fresh run's check_* skip-guard resume
+          from a prior run's complete artifacts instead of re-running
 
   capture:
     - "## Screens Captured" and "## Observed Issues" section headers
@@ -69,9 +98,11 @@ the authoritative checks; this is a summary):
       At a Glance, Summary, Detailed Findings, Prioritized Changes, Copy
       Fixes, Parked Items, Sources, Provenance)
     - a valid, non-empty findings.json SIBLING file (--findings-json):
-      valid JSON, a "run_id" matching this run, and a "findings" list
-      where every entry has the required keys with values drawn from the
-      controlled vocabularies (severity / evidence_tier / confirmation)
+      valid JSON, a well-formed non-empty "run_id" (exact-match against
+      --run-id only under --require-exact -- same resume/exact split as
+      the Run ID header field above), and a "findings" list where every
+      entry has the required keys with values drawn from the controlled
+      vocabularies (severity / evidence_tier / confirmation)
 
 WHAT THIS SCRIPT DELIBERATELY DOES NOT DO: it does not judge whether the
 PROSE is any good (that is still the model's job, and ultimately a
@@ -85,10 +116,15 @@ USAGE (called by the .dot's check_*/verify_* tool_command bash snippets,
 never invoked directly by a human in normal operation):
 
     python3 validate_artifact.py <type> <path> \\
-        [--screens-dir DIR] [--run-id RUN_ID] \\
+        [--screens-dir DIR] [--run-id RUN_ID] [--require-exact] \\
         [--findings-json PATH] [--min-size N]
 
     <type> is one of: capture, persona, review, spec
+
+    --require-exact requests STRICT (fresh-production / verify_*) Run ID
+    checking: the artifact's Run ID must equal --run-id exactly. Omit it
+    for RESUME (skip-guard / check_*) checking: any well-formed r-* stamp
+    passes. See "RESUME MODE vs EXACT MODE" above for the reasoning.
 
 EXIT CODE / STDOUT CONTRACT: exit 0 = contract satisfied, one "ok: ..."
 line on stdout. Exit 1 = contract violated, one "invalid: <reason>" line
@@ -129,6 +165,14 @@ _PLACEHOLDER_PATTERNS = [
     (re.compile(r"\(in progress\)", re.I), "placeholder marker '(in progress)'"),
     (re.compile(r"\btodo\b", re.I), "placeholder marker 'TODO'"),
 ]
+
+# The well-formed run_id SHAPE (mirrors amplifier_simulated_user_research
+# .runner.RUN_ID_PATTERN, kept independently here since this script has no
+# dependency on that package and must run as a bare `python3 script.py`
+# subprocess). This is the gate for RESUME mode: any Run ID matching this
+# shape is accepted regardless of which run produced it -- it just must
+# look like a genuine run_id, not a placeholder or garbage value.
+_RUN_ID_SHAPE_RE = re.compile(r"^r-\d{8}-\d{6}$")
 
 # Accepts EITHER an explicit "screens/<file>" relative reference OR a bare
 # "<file>.png|jpg|jpeg" token (no directory prefix). The capture prompt
@@ -222,7 +266,22 @@ def check_placeholders(text: str) -> None:
             fail(f"contains {label} -- this artifact is not finished")
 
 
-def check_run_id(text: str, expected_run_id: str | None) -> None:
+def check_run_id(
+    text: str, expected_run_id: str | None, *, require_exact: bool
+) -> None:
+    """Validate the artifact's "Run ID: <value>" header field.
+
+    Two distinct checks, always both applied regardless of mode:
+      1. non-empty, not a placeholder ("unknown"), and shaped like a real
+         run_id (r-YYYYMMDD-HHMMSS) -- this always applies, in BOTH modes.
+      2. cross-run identity match against --expected_run_id -- ONLY
+         applied when require_exact=True (verify_* fresh-production
+         gates). When require_exact=False (check_* resume skip-guards),
+         a well-formed stamp from ANY run passes step 1 and step 2 is
+         skipped entirely -- that is the whole point of resume: a
+         complete artifact from an earlier run is exactly what resume
+         exists to find and reuse, not reject.
+    """
     m = re.search(r"run id:\s*(.+)", text, re.I)
     if not m:
         fail("no 'Run ID:' field found in the artifact header")
@@ -233,7 +292,12 @@ def check_run_id(text: str, expected_run_id: str | None) -> None:
     value = re.sub(r"^[*_`]+|[*_`.\s]+$", "", value).strip()
     if not value or value.lower() == "unknown":
         fail(f"Run ID field is {value!r} -- placeholder/unknown Run ID")
-    if expected_run_id and value != expected_run_id:
+    if not _RUN_ID_SHAPE_RE.match(value):
+        fail(
+            f"Run ID field is {value!r} -- does not look like a well-formed "
+            "run_id (expected r-YYYYMMDD-HHMMSS)"
+        )
+    if require_exact and expected_run_id and value != expected_run_id:
         fail(
             f"Run ID field is {value!r} but this run's run_id is "
             f"{expected_run_id!r} -- looks like a stale artifact left over "
@@ -292,10 +356,12 @@ def extract_section(text: str, heading_prefix: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def validate_capture(path: str, screens_dir: str | None, run_id: str | None) -> None:
+def validate_capture(
+    path: str, screens_dir: str | None, run_id: str | None, *, require_exact: bool
+) -> None:
     text = read_text(path)
     check_placeholders(text)
-    check_run_id(text, run_id)
+    check_run_id(text, run_id, require_exact=require_exact)
     check_headers(text, CAPTURE_REQUIRED_HEADERS)
 
     if not screens_dir:
@@ -338,10 +404,10 @@ def validate_capture(path: str, screens_dir: str | None, run_id: str | None) -> 
         )
 
 
-def validate_persona(path: str, run_id: str | None) -> None:
+def validate_persona(path: str, run_id: str | None, *, require_exact: bool) -> None:
     text = read_text(path)
     check_placeholders(text)
-    check_run_id(text, run_id)
+    check_run_id(text, run_id, require_exact=require_exact)
 
     if not re.search(r"^#\s+\S", text, re.M):
         fail("missing an H1 title line (name + Run ID + date)")
@@ -362,21 +428,25 @@ def validate_persona(path: str, run_id: str | None) -> None:
         )
 
 
-def validate_review(path: str, run_id: str | None) -> None:
+def validate_review(path: str, run_id: str | None, *, require_exact: bool) -> None:
     text = read_text(path)
     check_placeholders(text)
-    check_run_id(text, run_id)
+    check_run_id(text, run_id, require_exact=require_exact)
     n = count_headers(text)
     if n < 3:
         fail(f"only {n} '## '-level section header(s) found, need >= 3")
 
 
 def validate_spec(
-    path: str, run_id: str | None, findings_json_path: str | None
+    path: str,
+    run_id: str | None,
+    findings_json_path: str | None,
+    *,
+    require_exact: bool,
 ) -> None:
     text = read_text(path)
     check_placeholders(text)
-    check_run_id(text, run_id)
+    check_run_id(text, run_id, require_exact=require_exact)
     check_headers(text, SPEC_REQUIRED_HEADERS)
 
     if not findings_json_path:
@@ -399,7 +469,12 @@ def validate_spec(
     data_run_id = data.get("run_id")
     if not data_run_id:
         fail(f"{findings_json_path} is missing a non-empty 'run_id' field")
-    if run_id and data_run_id != run_id:
+    if not isinstance(data_run_id, str) or not _RUN_ID_SHAPE_RE.match(data_run_id):
+        fail(
+            f"{findings_json_path}'s run_id {data_run_id!r} does not look "
+            "like a well-formed run_id (expected r-YYYYMMDD-HHMMSS)"
+        )
+    if require_exact and run_id and data_run_id != run_id:
         fail(
             f"{findings_json_path}'s run_id {data_run_id!r} does not match "
             f"this run's run_id {run_id!r} -- stale findings.json"
@@ -461,6 +536,18 @@ def main() -> None:
     parser.add_argument(
         "--run-id", default=None, help="this run's run_id, for staleness checks"
     )
+    parser.add_argument(
+        "--require-exact",
+        action="store_true",
+        default=False,
+        help=(
+            "STRICT mode (verify_* fresh-production gates): the artifact's "
+            "Run ID must equal --run-id exactly, or this fails as a stale "
+            "artifact. Omit for RESUME mode (check_* skip-guards, the "
+            "default): any well-formed r-* stamp passes regardless of "
+            "which run produced it."
+        ),
+    )
     parser.add_argument("--findings-json", default=None, help="required for type=spec")
     parser.add_argument(
         "--min-size",
@@ -476,13 +563,20 @@ def main() -> None:
     check_min_size(args.path, floor)
 
     if args.artifact_type == "capture":
-        validate_capture(args.path, args.screens_dir, args.run_id)
+        validate_capture(
+            args.path, args.screens_dir, args.run_id, require_exact=args.require_exact
+        )
     elif args.artifact_type == "persona":
-        validate_persona(args.path, args.run_id)
+        validate_persona(args.path, args.run_id, require_exact=args.require_exact)
     elif args.artifact_type == "review":
-        validate_review(args.path, args.run_id)
+        validate_review(args.path, args.run_id, require_exact=args.require_exact)
     elif args.artifact_type == "spec":
-        validate_spec(args.path, args.run_id, args.findings_json)
+        validate_spec(
+            args.path,
+            args.run_id,
+            args.findings_json,
+            require_exact=args.require_exact,
+        )
 
     ok()
 

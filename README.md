@@ -161,6 +161,28 @@ asur triage --config my-round/project.yaml
 `--on-human-gate stop` is the default and the documented choice (`fail` is kept as a
 deprecated alias; the underlying engine flag is still named `fail`).
 
+## Answering the gate
+
+An unattended run (`--on-human-gate stop`, the default) deliberately pauses once
+`research-spec.md` exists. To answer the gate:
+
+```bash
+# 1. read the spec the run pointed you at, then in a real terminal:
+asur run --config my-round/project.yaml --on-human-gate console
+# 2. the file guards skip every completed stage, so this goes straight to the
+#    gate; answer interactively (approve / request revision / end)
+asur triage --config my-round/project.yaml   # 3. then grade the findings
+```
+
+`console` requires an engine with console-gate support — currently on
+`amplifier-bundle-attractor`'s `feat/pipeline-runner-console-gate` branch, **not yet
+on `@main`** (which this package pins). Until the upstream merge, set
+`attractor_checkout` in `project.yaml` to a local checkout of that branch; on an
+older engine, `asur` fails loud with exactly this remediation instead of a
+traceback. In console mode the runner inherits your terminal (no output capture),
+so the ledger record is derived from ground truth (exit code, artifacts on disk,
+engine logs) and `stdout_tail`/`attractor_status` are empty for that run.
+
 ## Run identity, ledger, and triage
 
 Every run gets a **run_id** (`r-YYYYMMDD-HHMMSS`), passed into the graph as

@@ -136,6 +136,112 @@ class TestRunIdentity:
         assert "run_id=r-20260723-120000" in captured["command"]
 
 
+class TestConsoleGateMode:
+    def test_console_maps_to_engine_console(self):
+        assert normalize_gate_policy("console") == "console"
+
+    def test_cli_parser_accepts_console_choice(self):
+        from amplifier_simulated_user_research.cli import build_parser
+
+        args = build_parser().parse_args(
+            ["run", "--config", "project.yaml", "--on-human-gate", "console"]
+        )
+        assert args.on_human_gate == "console"
+
+    def _console_run(self, tmp_path, monkeypatch, *, returncode: int = 0):
+        """Run run_round in console mode; capture the subprocess kwargs."""
+        config = _config(tmp_path)
+        captured: dict[str, Any] = {}
+
+        def fake_run(command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            # stdout/stderr None: inherited streams -- any accidental
+            # proc.stdout[-4000:] access would raise TypeError.
+            return subprocess.CompletedProcess(
+                command, returncode=returncode, stdout=None, stderr=None
+            )
+
+        monkeypatch.setattr(
+            "amplifier_simulated_user_research.runner.subprocess.run", fake_run
+        )
+        monkeypatch.setattr(
+            "amplifier_simulated_user_research.runner.resolve_attractor_command",
+            lambda checkout: ["attractor"],
+        )
+        result = run_round(config, on_human_gate="console", run_id="r-20260724-020000")
+        return config, captured, result
+
+    def test_console_mode_inherits_stdio(self, tmp_path, monkeypatch):
+        """CRITICAL PLUMBING: the engine's ConsoleInterviewer must talk to the
+        human -- stdin/stdout/stderr are inherited, never captured/piped."""
+        _, captured, _ = self._console_run(tmp_path, monkeypatch)
+
+        kwargs = captured["kwargs"]
+        assert "capture_output" not in kwargs
+        assert (
+            "stdin" not in kwargs and "stdout" not in kwargs and "stderr" not in kwargs
+        )
+        idx = captured["command"].index("--on-human-gate")
+        assert captured["command"][idx + 1] == "console"
+
+    def test_console_mode_ledger_from_ground_truth(self, tmp_path, monkeypatch):
+        """No parsed output in console mode -- the ledger record is still
+        written, derived from ground truth (exit code, artifacts on disk)."""
+        config, _, result = self._console_run(tmp_path, monkeypatch)
+
+        assert result.status == "completed"
+        assert result.attractor_status is None  # nothing captured to parse
+        assert result.stdout_tail == "" and result.stderr_tail == ""
+
+        record = json.loads(
+            (Path(config.output_dir) / "rounds.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()[0]
+        )
+        assert record["run_id"] == "r-20260724-020000"
+        assert record["status"] == "completed"
+        assert record["gate"] is None and record["triage"] is None
+
+    def test_console_rejected_by_old_engine_fails_loud(self, tmp_path, monkeypatch):
+        """argparse exit 2 from an engine without console-gate support must
+        surface the exact situation + both fixes, not a raw traceback."""
+        with pytest.raises(RuntimeError) as excinfo:
+            self._console_run(tmp_path, monkeypatch, returncode=2)
+
+        msg = str(excinfo.value)
+        assert "console" in msg and "exit 2" in msg
+        assert "attractor_checkout" in msg  # fix 1: local checkout with the feature
+        assert "upstream merge" in msg  # fix 2: wait for @main
+        # the invocation never ran a round: no ledger record
+        assert not (tmp_path / "output" / "rounds.jsonl").exists()
+
+    def test_stop_mode_still_captures_output(self, tmp_path, monkeypatch):
+        """The inherit-stdio trade applies ONLY to console mode."""
+        config = _config(tmp_path)
+        captured: dict[str, Any] = {}
+
+        def fake_run(command, **kwargs):
+            captured["kwargs"] = kwargs
+            mock_result = MagicMock(spec=subprocess.CompletedProcess)
+            mock_result.returncode = 0
+            mock_result.stdout = "attractor: status=success\n"
+            mock_result.stderr = ""
+            return mock_result
+
+        monkeypatch.setattr(
+            "amplifier_simulated_user_research.runner.subprocess.run", fake_run
+        )
+        monkeypatch.setattr(
+            "amplifier_simulated_user_research.runner.resolve_attractor_command",
+            lambda checkout: ["attractor"],
+        )
+
+        result = run_round(config, on_human_gate="stop")
+        assert captured["kwargs"].get("capture_output") is True
+        assert result.attractor_status == "success"
+
+
 class TestGatePolicy:
     def test_stop_maps_to_engine_fail(self):
         assert normalize_gate_policy("stop") == "fail"

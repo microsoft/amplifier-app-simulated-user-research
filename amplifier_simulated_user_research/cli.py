@@ -278,13 +278,15 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--config", required=True, help="path to project.yaml")
     run_p.add_argument(
         "--on-human-gate",
-        choices=("stop", "fail", "auto-approve"),
+        choices=("stop", "fail", "auto-approve", "console"),
         default="stop",
         help=(
             "stop: pause at the approval gate -- the normal ending for an "
             "unattended run (read research-spec.md, then re-run interactively "
             "to answer the gate). 'fail' is a deprecated alias for stop. "
-            "'auto-approve' answers every gate with its first choice."
+            "'auto-approve' answers every gate with its first choice. "
+            "console: answer the gate interactively in this terminal (approve "
+            "/ request revision); requires an engine with console-gate support."
         ),
     )
     run_p.add_argument(

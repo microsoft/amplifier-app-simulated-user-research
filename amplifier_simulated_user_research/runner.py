@@ -56,14 +56,29 @@ RUN_ID_PATTERN = re.compile(r"^r-\d{8}-\d{6}$")
 
 # Human-facing gate policy -> the engine's `--on-human-gate` value.
 # "stop" is the documented choice; "fail" is kept as a deprecated alias
-# (the engine itself only knows fail/auto-approve -- "stop" describes what
-# actually happens: the pipeline pauses at the approval gate, which is the
-# normal ending for an unattended run).
+# ("stop" describes what actually happens: the pipeline pauses at the
+# approval gate, which is the normal ending for an unattended run).
+# "console" answers the gate interactively in the current terminal -- it
+# requires an engine with console-gate support (upstream branch
+# feat/pipeline-runner-console-gate; NOT yet on @main, so the pinned engine
+# dep rejects it with an argparse exit 2 -- see the fail-loud handling in
+# run_round).
 _GATE_POLICY_TO_ENGINE = {
     "stop": "fail",
     "fail": "fail",  # deprecated alias for "stop"
     "auto-approve": "auto-approve",
+    "console": "console",
 }
+
+_CONSOLE_GATE_REJECTED_MSG = (
+    "the engine rejected `--on-human-gate console` (argparse usage error, "
+    "exit 2): the installed amplifier-module-pipeline-runner predates "
+    "console-gate support (the feature is on the upstream branch "
+    "feat/pipeline-runner-console-gate, not yet on @main -- which is what "
+    "this package pins). Two fixes: set `attractor_checkout` in project.yaml "
+    "to a local amplifier-bundle-attractor checkout that has the console-gate "
+    "feature, or wait for the upstream merge and reinstall (`uv sync`)."
+)
 
 
 def generate_run_id(now: _dt.datetime | None = None) -> str:
@@ -328,7 +343,11 @@ def run_round(
         on_human_gate: "stop" (default; pause at the approval gate -- the
             normal ending for an unattended run: read research-spec.md,
             then re-run interactively to answer the gate), "fail"
-            (deprecated alias for "stop"), or "auto-approve".
+            (deprecated alias for "stop"), "auto-approve", or "console"
+            (answer the gate interactively in this terminal; requires an
+            engine with console-gate support -- see _CONSOLE_GATE_REJECTED_MSG.
+            In console mode the subprocess INHERITS stdin/stdout/stderr,
+            so attractor_status/stdout_tail/stderr_tail are empty).
         timeout_s: Optional subprocess-level backstop. None (default)
             means no additional timeout beyond the pipeline's own
             per-node timeouts.
@@ -381,18 +400,50 @@ def run_round(
     # instead of the shell.
     env = {**os.environ, **config.browser_env()}
 
+    console_mode = engine_gate_policy == "console"
+
     ts_start = _dt.datetime.now(_dt.timezone.utc)
-    proc = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        timeout=timeout_s,
-        check=False,
-        env=env,
-    )
+    if console_mode:
+        # CONSOLE-MODE PLUMBING TRADE (deliberate): the engine's
+        # ConsoleInterviewer must talk to the human, so the subprocess
+        # INHERITS stdin/stdout/stderr (no capture_output, no pipes). That
+        # means we cannot parse `attractor: status=...` from stdout -- and
+        # we deliberately do NOT try to tee/parse interleaved interactive
+        # output (fragile, and any buffering layer risks breaking the
+        # prompt/answer round-trip). Post-run facts come from ground truth
+        # we already have instead: the run_id we generated, artifacts by
+        # listing output_dir, per-stage timings from the engine's own
+        # status.json logs, and status from the exit code. Cost:
+        # attractor_status/stdout_tail/stderr_tail are empty for console
+        # runs -- the human already saw the output live.
+        proc = subprocess.run(
+            command,
+            timeout=timeout_s,
+            check=False,
+            env=env,
+        )
+        stdout_text = ""
+        stderr_text = ""
+    else:
+        proc = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+            env=env,
+        )
+        stdout_text = proc.stdout
+        stderr_text = proc.stderr
     ts_end = _dt.datetime.now(_dt.timezone.utc)
 
-    attractor_status = _parse_attractor_status(proc.stdout)
+    if console_mode and proc.returncode == 2:
+        # argparse usage error from the engine CLI: the invocation never ran
+        # a round (choice rejected before any pipeline work), so no ledger
+        # record is written. Fail loud with the exact situation + fixes.
+        raise RuntimeError(_CONSOLE_GATE_REJECTED_MSG)
+
+    attractor_status = _parse_attractor_status(stdout_text)
     artifacts = _collect_artifacts(output_dir, config)
 
     spec_present = SYNTHESIS_ARTIFACT in artifacts
@@ -433,6 +484,6 @@ def run_round(
         logs_dir=logs_dir,
         rounds_path=rounds_path,
         command=command,
-        stdout_tail=proc.stdout[-4000:],
-        stderr_tail=proc.stderr[-4000:],
+        stdout_tail=stdout_text[-4000:],
+        stderr_tail=stderr_text[-4000:],
     )
