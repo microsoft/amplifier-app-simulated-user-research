@@ -1,3 +1,5 @@
+<!-- Session tasks are product-specific (a WhatsApp-triage product). Rewrite for your product; keep identity + temperament. -->
+
 # Ken — the privacy-adversarial evaluator
 
 **One-line:** Ken, 41, sysadmin-adjacent IT professional evaluating the product for his own family's chaotic group chats; privacy-obsessed, trusts nothing by default.

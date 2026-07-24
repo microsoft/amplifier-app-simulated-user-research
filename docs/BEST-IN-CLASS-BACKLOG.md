@@ -114,18 +114,20 @@ consumption surface, or deepening the four in lockstep · SaaS/hosted runs · da
 auto-fix (spec→PR) automation · heavy browser-plumbing moat investment (agentic-browser
 parity is coming; the moat is the method + the measured precision number).
 
-## Open decisions (the councils explicitly left these to the owner)
+## Owner decisions (resolved 2026-07-23)
 
-- **A. The name/claim.** Reposition to "automated pre-flight product audit (persona-driven
-  heuristic audit)"? Positioning-critic: the audit category is winnable; the research
-  category invites the one fight the product can't win — and the genuine moat (real browser,
-  real instance, reproducible findings — which Synthetic Users structurally cannot offer)
-  currently appears in zero sentences of positioning. Cheapest path to best-in-class is
-  Gates 1–2 *plus* the honest name.
-- **B. The gift shop.** cranky-old-sam (unopposed): keep the CLI, delete/park the unused
-  lib + tool-module adapters until a real consumer appears. Trades optionality for present
-  simplicity; if agent-callable/lib consumers are genuinely expected soon, keeping L2/L3 is
-  defensible ceremony — but it carries a 4x integration cost per roadmap item today.
+- **A. The name/claim — RESOLVED: name stays, framing copy repositions.** Per the
+  voice-strategist's finding ("the name 'Simulated User Research' itself is honest; keep
+  it"), the tool keeps its name while every claim-bearing sentence adopts the audit-filter
+  framing ("a user-research-style audit round… it makes your first real user session worth
+  running — it does not replace it") and the moat sentence (real browser · real instance ·
+  reproducible findings) enters the positioning.
+- **B. The gift shop — RESOLVED: ALL layers stay** (owner call, overruling
+  cranky-old-sam's demolition recommendation). L1 attractor + Resolve sidecar, L2 lib,
+  L3 tool module, L4 CLI are all retained as strategic surface area. Consequence accepted:
+  the adapters must stay tested and integrated (backlog item 12's golden tests and the
+  instrument trio become more load-bearing, not less), and every roadmap item carries the
+  multi-surface integration cost knowingly.
 
 ## Industry grounding (research brief highlights)
 

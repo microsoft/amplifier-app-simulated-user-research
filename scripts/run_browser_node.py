@@ -17,52 +17,136 @@ attempts (proven: 3/3 identical deaths in this pipeline's own history).
 
 STRUCTURAL FIX: stop asking the model to write the deliverable to disk as
 its LAST action. Instead, run the persona/capture task as a single-shot
-`amplifier run --mode single --output-format json` call and treat the
-session's raw final response TEXT as the deliverable -- captured here,
-programmatically, regardless of whether the model's last turn was a tool
-call or plain prose. A text-only final reply is no longer a failure mode;
-it's the intended, expected way this now finishes. This mirrors the
-pattern that worked in the project's manual (non-pipeline) research round:
-"the persona report returned as the response text, not agent-side file
-writes."
+`amplifier run --mode single --output-format json-trace` call and treat
+the session's raw final response TEXT as the deliverable -- captured
+here, programmatically, regardless of whether the model's last turn was
+a tool call or plain prose. A text-only final reply is no longer a
+failure mode; it's the intended, expected way this now finishes. This
+mirrors the pattern that worked in the project's manual (non-pipeline)
+research round: "the persona report returned as the response text, not
+agent-side file writes."
+
+HARDENING SPRINT (3rd council round) additions -- read before editing:
+
+1. BROWSER-RAN PROOF (kills the hallucinated-persona class). A dead
+   target URL, or a model that just narrates a plausible-looking session
+   without ever touching the browser, used to be indistinguishable from a
+   genuine walkthrough -- both produce an 11KB report that reads fine and
+   passes a byte-floor check. `--output-format json-trace` (not plain
+   `json`) gives this wrapper the session's actual tool-call trace
+   (`execution_trace`): every bash invocation, its exact command string,
+   and its real exit status, straight from the engine's own tool:pre /
+   tool:post hooks -- not the model's self-report. `_count_browser_activity`
+   below counts REAL, SUCCEEDED `agent-browser open`/`screenshot`
+   invocations from that trace. If zero real navigations (or zero real
+   screenshots) are found, this script REFUSES to write the report at
+   all and exits 1 with a loud reason -- so the .dot's verify_<stage> gate
+   sees a missing/stale artifact and drives its retry/hard-stop path,
+   instead of accepting a plausible fiction. A `.session-manifest-<stem>.json`
+   sidecar is always written (when a trace was obtained) recording the
+   raw counts, for humans debugging a hard-stop.
+
+   This mirrors the "have the wrapper verify a durable file exists and is
+   fresh" fallback design named in the hardening brief, but goes one step
+   stronger: json-trace lets us inspect the SESSION'S OWN tool-call
+   ground truth directly, rather than only inferring browser activity
+   indirectly from a screenshot file's mtime. Both mechanisms are used
+   together here for defense in depth -- the persona/capture instructions
+   below still require a screenshot to a known path (see
+   `_screenshot_hint`), and validate_artifact.py separately verifies every
+   screenshot filename a capture report cites actually exists on disk.
+
+2. RUN ID / PROVENANCE STAMPING IS MECHANICAL, NOT PROMPTED. A model can
+   forget (or garble) a "Run ID: ..." line if merely asked to include one
+   in its final reply. `_stamp_header` below prepends the provenance
+   banner and the literal `Run ID: <run_id>` / `Date: <date>` lines to
+   the model's response text BEFORE it is written to the report path --
+   deterministically, in this script, never left to model compliance.
+   This is what makes validate_artifact.py's Run ID / staleness check a
+   real contract instead of a suggestion: the value is always correct
+   whenever this wrapper is what wrote the file at all.
+
+3. EVIDENCE-TIER / EPISTEMIC-HONESTY PROMPTING (Gate 2, product of the
+   design panel's review): the persona and capture instructions below
+   enforce the [OBSERVED]/[SIMULATED] tagging convention, the
+   "In-Character Reactions (simulated think-aloud)" rename (was "Verbatim
+   Confusions"), the "Verdict (simulated, per this persona's stated bar)"
+   rename, the `PROBE (scripted in brief):` tag for brief-scripted
+   findings, and `HYPOTHESIS:` marking for any claim about how a REAL
+   (non-simulated) user would react. These are prompt-level asks -- this
+   script cannot mechanically verify persona reasoning quality -- but the
+   REQUIRED SECTION HEADERS this prompt enforces are mechanically checked
+   downstream by validate_artifact.py, so a persona report missing them
+   fails the gate and retries rather than silently shipping.
 
 This script is invoked from a `shape=parallelogram` (tool) node's
 tool_command in simulated-user-research.dot. It does NOT replace the
 existing verify_<stage> file-ground-truth quality gate downstream in the
-.dot -- that gate (byte-size check + bounded retry + loud hard_stop) is
-left completely unchanged and remains the sole judge of whether the
-written artifact is good enough. This script's ONLY job is: run the
-single-shot session, capture the final response text, and write it to the
-target report path -- exactly the mechanical step that box nodes were
-depending on the MODEL to remember to do as its last tool call.
+.dot -- that gate now calls scripts/validate_artifact.py (content
+contracts, not a byte floor; see that script's module docstring) and
+remains the sole judge of whether the written artifact is good enough.
+This script's job is: run the single-shot session, verify the browser
+genuinely ran, capture the final response text with a mechanically
+correct provenance/Run-ID header, and write it to the target report path
+-- exactly the mechanical step that box nodes were depending on the MODEL
+to remember to do as its last tool call, PLUS the ground-truth check a
+model's own self-report could never provide.
 
 EXIT CODE / STDOUT CONTRACT (tool nodes route on context.tool.last_line --
 the LAST non-empty stdout line -- so this script never lets report prose
 reach stdout):
   exit 0, last stdout line "wrote:<n>"   -- subprocess ran, JSON parsed,
-                                             <n> bytes written to the
-                                             report path (n may be small;
-                                             the .dot's verify_<stage> node
-                                             is what judges quality/size,
+                                             real browser activity was
+                                             confirmed, <n> bytes written
+                                             to the report path (n may be
+                                             small; the .dot's
+                                             verify_<stage> node is what
+                                             judges quality/completeness
+                                             via validate_artifact.py,
                                              not this script).
-  exit 1, last stdout line "error:<msg>" -- genuine infra failure (amplifier
-                                             CLI missing/crashed, subprocess
-                                             timeout, unparseable JSON).
-                                             This is NOT the "model
-                                             narrated instead of writing a
-                                             file" case -- that case now
-                                             always exits 0, because the
-                                             narration IS the deliverable.
+  exit 1, last stdout line "error:<msg>" -- genuine infra failure
+                                             (amplifier CLI missing/
+                                             crashed, subprocess timeout,
+                                             unparseable JSON) OR zero
+                                             real browser navigations/
+                                             screenshots detected in the
+                                             session trace (the
+                                             hallucinated-session case) --
+                                             no report is written in
+                                             either case.
 
 GOTCHA (verified live, 2026-07-23): `amplifier run --mode single
---output-format json` still prints a leading "Bundle '<name>' prepared
-successfully" line onto STDOUT before the JSON payload, on EVERY
-invocation (not only a cold module cache). This script tolerates that by
-locating the first "{" in stdout and using json.JSONDecoder().raw_decode
-from there rather than json.loads(stdout) directly. If you see
-"error:no JSON object in output" or "error:unparseable JSON output" in
-the node's stderr log, re-check this assumption against the installed
-amplifier CLI version first -- it may have changed.
+--output-format json-trace` still prints a leading "Bundle '<name>'
+prepared successfully" line onto STDOUT before the JSON payload, on
+EVERY invocation (not only a cold module cache). This script tolerates
+that by locating the first "{" in stdout and using
+json.JSONDecoder().raw_decode from there rather than json.loads(stdout)
+directly. If you see "error:no JSON object in output" or
+"error:unparseable JSON output" in the node's stderr log, re-check this
+assumption against the installed amplifier CLI version first -- it may
+have changed.
+
+--role synthesis WAS CONSIDERED AND DELIBERATELY NOT BUILT: the
+hardening brief offered a choice -- convert synthesis to this single-shot
+wrapper, or keep it a box node and justify. Justification (recorded here
+and mirrored in the .dot's synthesis node comment): synthesis's
+narrate-and-die risk on a FAILED REVISION ("a failed revision silently
+returns the stale spec") is now caught structurally by a hash-staleness
+check in the .dot (snapshot research-spec.md's hash before a revision
+pass, hard-stop if it didn't change after synthesis runs) -- this targets
+the EXACT failure mode named, without giving up what a box node gets
+that a subprocess wrapper would not: goal_gate+retry_target (spec 3.4),
+reasoning_effort=high override, and critically the engine's automatic
+consume-once injection of the human's freeform gate feedback
+(`human.gate.text`) as a durable prior turn ahead of the prompt (see
+backend.py's step 5) -- reproducing that plumbing across the subprocess
+boundary would need to pass the human's feedback as a shell-escaped
+--param and forfeits the "it's just a normal box node" simplicity for no
+proven benefit today. If synthesis is EVER observed dying the loop-agent
+text-only-reply death shape in practice (it has zero such incidents in
+this pipeline's history, per the .dot's own header comment), add a
+--role synthesis mode here following the same pattern as capture/persona
+below -- the wrapper and overlay bundle already generalize for it.
 """
 
 from __future__ import annotations
@@ -70,9 +154,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
+from datetime import UTC
+from datetime import datetime
 
 
 def _last_line_exit(message: str, *, ok: bool) -> None:
@@ -87,8 +174,117 @@ def _last_line_exit(message: str, *, ok: bool) -> None:
     sys.exit(0 if ok else 1)
 
 
+# ---------------------------------------------------------------------------
+# Browser-ran proof: parse json-trace's execution_trace for REAL, SUCCEEDED
+# agent-browser invocations. This is ground truth from the engine's own
+# tool:pre/tool:post hooks -- not the model's self-report -- so it is immune
+# to the "plausible narrated fiction" failure class a dead target URL used
+# to enable.
+# ---------------------------------------------------------------------------
+
+_AB_TOKEN_RE = re.compile(r"agent-browser\b")
+_AB_OPEN_RE = re.compile(r"agent-browser(?:\s+--\S+)*\s+open\b")
+_AB_SCREENSHOT_RE = re.compile(r"agent-browser(?:\s+--\S+)*\s+screenshot\b")
+
+
+def _count_browser_activity(execution_trace: list[dict]) -> dict[str, int]:
+    """Count real agent-browser invocations from a json-trace execution_trace.
+
+    Each trace entry is one bash tool call (possibly a `&&`-chained shell
+    one-liner containing several agent-browser subcommands -- the CLI's
+    own docs recommend chaining). A chain's exit reflects whether EVERY
+    subcommand in it succeeded (`&&` short-circuits on the first
+    failure), so `commands` (raw subcommand count, regardless of outcome)
+    is counted unconditionally, while `navigations`/`screenshots` (real,
+    succeeded invocations) are only counted when the whole bash call
+    reported success with returncode 0.
+    """
+    navigations = 0
+    screenshots = 0
+    commands = 0
+    for entry in execution_trace:
+        if entry.get("type") != "tool_call" or entry.get("tool") != "bash":
+            continue
+        arguments = entry.get("arguments") or {}
+        command = arguments.get("command") or ""
+        if "agent-browser" not in command:
+            continue
+        commands += len(_AB_TOKEN_RE.findall(command))
+
+        result = entry.get("result") or {}
+        output = result.get("output") or {}
+        succeeded = bool(result.get("success")) and output.get("returncode", 1) == 0
+        if succeeded:
+            navigations += len(_AB_OPEN_RE.findall(command))
+            screenshots += len(_AB_SCREENSHOT_RE.findall(command))
+
+    return {
+        "navigations": navigations,
+        "screenshots": screenshots,
+        "commands": commands,
+    }
+
+
+def _write_manifest(
+    *,
+    output_dir: str,
+    report_path: str,
+    activity: dict[str, int],
+    session_id: str | None,
+) -> str:
+    """Write the `.session-manifest-<report-stem>.json` sidecar.
+
+    Filename contract (fixed with the parallel lib/CLI build): the stem is
+    the report path's basename without extension, e.g. a report path of
+    `.../capture-notes.md` writes `.session-manifest-capture-notes.json`;
+    `.../persona-marisol.md` writes `.session-manifest-persona-marisol.json`.
+    """
+    stem = os.path.splitext(os.path.basename(report_path))[0]
+    manifest_path = os.path.join(output_dir, f".session-manifest-{stem}.json")
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "navigations": activity["navigations"],
+                "screenshots": activity["screenshots"],
+                "commands": activity["commands"],
+                "session_id": session_id,
+            },
+            f,
+            indent=2,
+        )
+    return manifest_path
+
+
+def _stamp_header(
+    response_text: str, *, run_id: str, date_str: str, banner_subject: str
+) -> str:
+    """Mechanically prepend the provenance banner + Run ID + Date.
+
+    Deliberately NOT left to the model: a model can forget or garble a
+    "Run ID: ..." line, but this script never does. This is what turns
+    validate_artifact.py's Run ID / staleness check from a polite request
+    into a real, unforgeable contract for every report this wrapper
+    writes.
+    """
+    banner = (
+        f"> Simulated session: {banner_subject} drove a real browser against a "
+        "real instance. Product behaviors below (bug tables, timings, network "
+        "checks) were observed in-session and are reproducible. First-person "
+        "reactions and the verdict are simulation -- hypotheses about this user "
+        "class, not testimony.\n\n"
+        f"Run ID: {run_id}\n"
+        f"Date: {date_str}\n\n"
+        "---\n\n"
+    )
+    return banner + response_text
+
+
 def build_capture_instruction(
-    *, target_url: str, api_key: str, output_dir: str, existing_content: str | None
+    *,
+    target_url: str,
+    api_key: str,
+    output_dir: str,
+    existing_content: str | None,
 ) -> str:
     resume_block = ""
     if existing_content:
@@ -106,6 +302,8 @@ def build_capture_instruction(
 
 How this works: you have real bash access (agent-browser CLI) and can browse the live app. Do the real work with tools as you go. Your FINAL reply -- however it ends, whether or not it happens to include a tool call -- is captured programmatically and used AS the deliverable artifact. You do not need to save it to a file yourself; just make sure your LAST reply contains the complete, final, substantive report in the exact format specified below (no placeholders, no "I'll write this next" -- the actual content).
 
+EVIDENCE DISCIPLINE (this run is audited): every observation in this report is [OBSERVED] -- something you personally saw in a real browser against a real instance this session. There is no persona judgment in this stage, only direct observation. Do not write a partial screen list and label the rest "to be completed" or "(in progress)" -- an incomplete walkthrough is a failed session that will be rejected and retried, not a partial pass. If you are running low on turns, prioritize finishing EVERY screen at a lower level of detail over doing a few screens exhaustively and leaving the rest unwritten.
+
 Setup:
 - As your first action, run: agent-browser close --all   (clears any stale browser daemon from a prior crashed run; harmless if nothing was running)
 - Target application: {target_url}
@@ -116,17 +314,17 @@ Walk the application screen-by-screen using the agent-browser CLI via bash (agen
   1. Mobile: agent-browser set viewport 390 844
   2. Desktop: agent-browser set viewport 1280 900
 
-Save every screenshot into {output_dir}/screens/ with descriptive, sequential filenames, e.g. screens/01-onboarding-mobile.png, screens/01-onboarding-desktop.png, screens/02-main-feed-mobile.png. Zero-pad the sequence number. Create {output_dir}/screens/ if it does not exist.
+Save every screenshot into {output_dir}/screens/ with descriptive, sequential filenames, e.g. screens/01-onboarding-mobile.png, screens/01-onboarding-desktop.png, screens/02-main-feed-mobile.png. Zero-pad the sequence number. Create {output_dir}/screens/ if it does not exist. Capture at least 4 distinct screens at both viewports (8+ files total) -- this is verified mechanically downstream, not optional.
 
-While you go, keep a running list of anything that looks broken, confusing, or unfinished: layout breaks, overlapping elements, dead taps, missing loading states, text truncation, or anything a real user would notice as a bug. This is NOT a persona simulation -- just an honest, first-pass visual and functional walkthrough note.
+While you go, keep a running list of anything that looks broken, confusing, or unfinished: layout breaks, overlapping elements, dead taps, missing loading states, text truncation, or anything a real user would notice as a bug. This is NOT a persona simulation -- just an honest, first-pass visual and functional walkthrough note. Every bug you note must reference the specific screenshot filename where it's visible -- cite it as `screens/<filename>` (the same relative path you saved it to, e.g. `screens/01-onboarding-mobile.png`), not a bare filename with no path -- this is how the report is checked against what's actually on disk.
 
 When finished, run agent-browser close to end the browser session cleanly -- REQUIRED, later stages assume no browser daemon is left running.
 
-Your FINAL reply must be the complete report with these exact sections (this text is what gets saved -- there is no other save step):
+Your FINAL reply must be the complete report with these exact sections (this text is what gets saved -- there is no other save step; a provenance banner and Run ID are added automatically, you do not need to write them):
   ## Screens Captured
-  (numbered list, each with its screenshot filenames)
+  (numbered list, each with its screenshot filenames cited as `screens/<filename>`)
   ## Observed Issues
-  (each: screen, what's wrong, severity guess P1/P2/P3)
+  (each: screen + screenshot filename cited as `screens/<filename>`, what's wrong, severity guess P1/P2/P3)
 
 The report must be substantive and complete -- a bare section skeleton with no real findings does not satisfy this task."""
 
@@ -152,9 +350,19 @@ def build_persona_instruction(
             "----- END PARTIAL DRAFT -----\n"
         )
 
+    screenshot_hint = f"{output_dir}/screens/persona-{persona_name}-session.png"
+
     return f"""You are conducting a PERSONA SESSION as part of a simulated-user-research round. You embody ONE persona doing a TRUE first-run of the product in a real browser -- this is NOT a review of screenshots, you must actually drive the app live via the agent-browser CLI.
 
 How this works: you have real bash access (agent-browser CLI) and can browse the live app. Do the real work with tools as you go, fully in character. Your FINAL reply -- however it ends, whether or not it happens to include a tool call -- is captured programmatically and used AS the deliverable artifact. You do not need to save it to a file yourself; just make sure your LAST reply contains the complete, final, substantive friction-log report in the exact format specified below (no placeholders, no "let me write this now" -- the actual content, in character).
+
+EVIDENCE DISCIPLINE (this run is audited -- read carefully, it changes how you tag your own findings):
+- Your Bug Table is [OBSERVED]: every row must be a real behavior you personally witnessed this session in a real browser against a real instance, with a "Reproducible steps" entry a human could replay verbatim. Never put a feeling or a guess in the Bug Table.
+- Your In-Character Reactions and Verdict sections are [SIMULATED]: your persona's judgment, not a real human's testimony. Keep this distinction sharp in your own writing -- don't blur an observed bug into a simulated reaction or vice versa.
+- If your persona brief SCRIPTED a specific task for you to do this session (e.g. "trigger the learn-from-feedback feature", "ask one pointed trap question", "edit the rules directly") and you did that scripted thing and it produced a finding, tag that finding `PROBE (scripted in brief):` in your report. Reporting a scripted probe as if it were a spontaneous discovery is dishonest even when the underlying bug is real -- name it as what it is.
+- Any severity you assign must be justified by the PRODUCT'S OWN stated promise or observed behavior (e.g. copy that claims X while the UI does Y) -- never by your persona's personal preferences or backstory alone.
+- Any claim about how a REAL human user (not you, a simulated persona) would react to this product must be marked `HYPOTHESIS:` -- you are one LLM in one costume for one session, not a study of real users.
+- As part of this session, take at least one screenshot via `agent-browser screenshot {screenshot_hint}` at the moment that most shaped your verdict -- this is a durable, independently-checkable proof that you drove a real browser this session, not just a chat transcript. This is verified mechanically downstream.
 
 Your persona brief (this defines who you are, your goals, your technical comfort level, and what would make you say yes or no to this product -- adopt this persona fully for the rest of the session; do not break character in your actions or your written log):
 ----- BEGIN PERSONA BRIEF -----
@@ -171,21 +379,23 @@ Act as this persona doing REAL first-run onboarding and the concrete tasks descr
 
 When finished, close your browser: agent-browser close
 
-Your FINAL reply must be the complete friction log with these exact sections (this text is what gets saved -- there is no other save step):
+Your FINAL reply must be the complete friction log with these exact sections, in this exact order (this text is what gets saved -- there is no other save step; a provenance banner and Run ID are added automatically, you do not need to write them -- just start with your own H1):
+  # <your persona's name> -- Session Report
+  (H1 title line, then a line noting today's date in your own words is fine but not required -- the Run ID and date are stamped for you automatically)
   ## Persona
   (name, one-line description from the brief)
   ## Friction Log
-  (chronological; each entry: what you tried, what happened, severity P1 blocking / P2 annoying / P3 minor)
-  ## Verbatim Confusions
-  (direct quotes of anything you -- in character -- would have said out loud in confusion)
+  (chronological; each entry: what you tried, what happened, severity P1 blocking / P2 annoying / P3 minor. EVERY entry above P3 must have a matching row in your Bug Table below -- P1/P2 friction with no corresponding bug-table row is an inconsistent report.)
+  ## In-Character Reactions (simulated think-aloud)
+  ([SIMULATED] direct quotes of anything you -- in character -- would have said out loud in confusion or delight)
   ## Delights
   (anything that worked well)
+  ## Bug Table
+  ([OBSERVED] markdown table: | Screen | Issue | Severity | Reproducible steps | -- every row must be something you actually did and saw this session. If you truly found zero bugs, write a single explicit line "No bugs observed this session." instead of an empty table -- do not leave this section ambiguous between "found nothing" and "gave up".)
   ## One Change
   (the SINGLE change that would most improve your experience)
-  ## Verdict
-  (would you adopt/continue using this product? yes/no/maybe, one paragraph why)
-  ## Bug Table
-  (markdown table: | Screen | Issue | Severity | Reproducible steps |)
+  ## Verdict (simulated, per this persona's stated bar)
+  ([SIMULATED] would you adopt/continue using this product? yes/no/maybe, one paragraph why, judged strictly against the yes/no bar YOUR persona brief defines -- not a generic opinion, and not a HYPOTHESIS about other users unless explicitly marked as one)
 
 The report must be substantive and complete -- a bare section skeleton with no real findings does not satisfy this task."""
 
@@ -205,6 +415,13 @@ def main() -> None:
         "--report-path",
         required=True,
         help="Absolute path to write the captured response text to",
+    )
+    parser.add_argument(
+        "--run-id",
+        required=True,
+        help="This round's run_id (e.g. r-20260723-140501) -- stamped into "
+        "the artifact's Run ID header mechanically, never left to model "
+        "compliance. See _stamp_header.",
     )
     parser.add_argument(
         "--persona-name", default="", help="Required when --role persona"
@@ -236,6 +453,7 @@ def main() -> None:
             output_dir=args.output_dir,
             existing_content=existing_content,
         )
+        banner_subject = "an LLM conducting the visual capture pass"
     else:
         if not args.persona_name or not args.personas_dir:
             _last_line_exit(
@@ -260,6 +478,7 @@ def main() -> None:
             persona_brief=persona_brief,
             existing_content=existing_content,
         )
+        banner_subject = f"an LLM role-playing {args.persona_name}"
 
     cmd = [
         "amplifier",
@@ -269,7 +488,7 @@ def main() -> None:
         "--mode",
         "single",
         "--output-format",
-        "json",
+        "json-trace",
         instruction,
     ]
 
@@ -308,10 +527,10 @@ def main() -> None:
 
     # GOTCHA (confirmed live, every invocation -- not just cold-cache): the
     # amplifier CLI prints a leading "Bundle '<name>' prepared successfully"
-    # line onto STDOUT before the --output-format json payload, even in
-    # --mode single --output-format json mode. A naive json.loads(stdout)
-    # breaks on this every time. Find the first '{' and decode from there
-    # with raw_decode so the leaked banner line is tolerated unconditionally.
+    # line onto STDOUT before the --output-format json-trace payload. A
+    # naive json.loads(stdout) breaks on this every time. Find the first
+    # '{' and decode from there with raw_decode so the leaked banner line
+    # is tolerated unconditionally.
     brace_idx = proc.stdout.find("{")
     if brace_idx == -1:
         print(
@@ -340,17 +559,66 @@ def main() -> None:
         _last_line_exit(f"error:session status {data.get('status')!r}", ok=False)
         return
 
+    # --- Browser-ran proof (see module docstring, item 1) ---------------
+    execution_trace = data.get("execution_trace") or []
+    activity = _count_browser_activity(execution_trace)
+    manifest_path = _write_manifest(
+        output_dir=args.output_dir,
+        report_path=args.report_path,
+        activity=activity,
+        session_id=data.get("session_id"),
+    )
+
+    if activity["navigations"] == 0:
+        print(
+            "[run_browser_node] REFUSING to write "
+            f"{args.report_path}: zero real agent-browser navigations "
+            f"detected in the session trace ({activity['commands']} "
+            "agent-browser command(s) attempted, "
+            f"{activity['navigations']} succeeded navigation(s), "
+            f"{activity['screenshots']} succeeded screenshot(s)). This "
+            "session likely narrated a plausible-looking report without "
+            f"ever driving a real browser. See {manifest_path} and the "
+            "full execution_trace in this node's status.json/output.txt "
+            "log for the raw command list.",
+            file=sys.stderr,
+        )
+        _last_line_exit("error:zero real browser navigations", ok=False)
+        return
+
+    if activity["screenshots"] == 0:
+        print(
+            "[run_browser_node] REFUSING to write "
+            f"{args.report_path}: zero real agent-browser screenshots "
+            f"detected in the session trace ({activity['navigations']} "
+            "succeeded navigation(s) but 0 succeeded screenshots). Both "
+            "capture and persona instructions require at least one real "
+            f"screenshot as durable proof of a real session. See "
+            f"{manifest_path} for the raw counts.",
+            file=sys.stderr,
+        )
+        _last_line_exit("error:zero screenshots captured", ok=False)
+        return
+
     response_text = data.get("response") or ""
+    date_str = datetime.now(UTC).strftime("%Y-%m-%d")
+    stamped_text = _stamp_header(
+        response_text,
+        run_id=args.run_id,
+        date_str=date_str,
+        banner_subject=banner_subject,
+    )
 
     with open(args.report_path, "w", encoding="utf-8") as f:
-        f.write(response_text)
+        f.write(stamped_text)
 
     print(
-        f"[run_browser_node] wrote {len(response_text)} bytes to {args.report_path} "
-        f"(session_id={data.get('session_id')})",
+        f"[run_browser_node] wrote {len(stamped_text)} bytes to {args.report_path} "
+        f"(session_id={data.get('session_id')}, navigations={activity['navigations']}, "
+        f"screenshots={activity['screenshots']}, commands={activity['commands']})",
         file=sys.stderr,
     )
-    _last_line_exit(f"wrote:{len(response_text)}", ok=True)
+    _last_line_exit(f"wrote:{len(stamped_text)}", ok=True)
 
 
 if __name__ == "__main__":

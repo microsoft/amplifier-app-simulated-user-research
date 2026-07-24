@@ -30,6 +30,16 @@ description: >
   human approve/revise checkpoint at the end.
 pipeline: simulated-user-research.dot
 params:
+  run_id:
+    input: shortText
+    label: "Run ID"
+    description: >
+      Unique identifier for this round, e.g. r-20260723-140501. Stamped
+      into every artifact's header and validated for staleness by
+      scripts/validate_artifact.py on every check_*/verify_* gate. No
+      default -- callers (including this sidecar's own dispatcher) must
+      supply a fresh value per run.
+    required: true
   target_url:
     input: shortText
     label: "Target URL"

@@ -1,3 +1,5 @@
+<!-- Session tasks are product-specific (a WhatsApp-triage product). Rewrite for your product; keep identity + temperament. -->
+
 # Marisol — the non-technical operator
 
 **One-line:** Marisol, 52, owns a small catering business run almost entirely over WhatsApp — hundreds of messages a day across orders, suppliers, and family.

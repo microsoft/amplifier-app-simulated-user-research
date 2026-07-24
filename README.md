@@ -1,14 +1,25 @@
 # Simulated User Research
 
-Run a full user-research round against any web product **with zero humans**: seed a
-scratch instance with lived-in mock data, capture every screen, run parallel design
-reviews, put N distinct personas through real first-run browser sessions, and
-synthesize everything into one implementation-ready spec — gated by a human
-approve/revise checkpoint at the end.
+Run a user-research-style audit round against any web product **with zero humans in
+the loop until the approval gate**: seed a scratch instance with lived-in mock data,
+capture every screen, run parallel design reviews, put N distinct personas through
+real first-run browser sessions, and synthesize everything into one
+implementation-ready spec — gated by a human approve/revise checkpoint at the end.
 
 First proven against a real product (2026-07-22): the manual dry-run of this exact
 process found 3 HIGH-severity bugs, a privacy leak (CDN font requests in a
 "local-only" product), and consent-copy overclaims — in one afternoon.
+
+**What this is — and isn't.** This is an automated pre-flight product audit with
+persona lenses, not a replacement for talking to users. What the round *observes* is
+real and reproducible: dead taps, contradictory copy, measured waits, third-party
+network calls — each carries repro steps a human can re-run. What the personas *feel
+and conclude* is simulation: one model role-playing three briefs. Their reactions and
+verdicts are hypotheses to test with real users, not testimony from them. Used
+honestly, it makes your first real user session worth running — it does not replace
+it. What makes the findings worth triaging at all: a real browser against a real
+seeded instance, producing reproducible, evidence-labeled findings — not a model
+imagining screens.
 
 ## How it works
 
@@ -30,7 +41,8 @@ seed (script, resumable)
 ```
 
 - **Files are the contract**: every stage reads/writes real artifacts under
-  `output_dir` (`capture-notes.md`, `review-*.md`, `persona-*.md`, `research-spec.md`).
+  `output_dir` (`capture-notes.md`, `review-*.md`, `persona-*.md`, `research-spec.md`,
+  `findings.json`).
 - **Resumable**: every stage has a file-existence guard — re-running after a crash
   skips completed stages; delete an artifact to force that stage to re-run.
 - **Browser bridge**: the capture and persona stages shell out to
@@ -70,15 +82,18 @@ attractor run pipelines/simulated-user-research.dot \
   --param persona1=marisol --param persona2=dev --param persona3=ken \
   --param sur_repo_dir=/abs/path/to/this/repo \
   --param browser_bundle=sur-browser-node \
+  --param run_id=r-20260723-120000 \
   --provider anthropic \
   --logs-root /abs/path/for/artifacts/.attractor-logs \
   --on-human-gate fail
 ```
 
-`--on-human-gate fail` is correct for unattended runs: the pipeline deliberately
-stops at the gate once `research-spec.md` exists — a human reads the spec, then
-re-runs the same command in a terminal to answer the gate interactively (approve /
-request revision).
+`--on-human-gate fail` is the raw engine's flag name for what the CLI/lib call
+`stop`: the pipeline deliberately pauses at the gate once `research-spec.md` exists —
+the normal ending for an unattended run. A human reads the spec, then re-runs the
+same command in a terminal to answer the gate interactively (approve / request
+revision). `run_id` is this run's identity (`r-YYYYMMDD-HHMMSS`); the L2/L4 layers
+generate it automatically — a direct `attractor run` must pass it explicitly.
 
 `pipelines/simulated-user-research.resolver.yaml` is the sidecar manifest that
 registers this pipeline with the Amplifier Resolve dot-graph resolver's picker UI
@@ -96,14 +111,17 @@ config = RoundConfig.from_yaml("project.yaml")
 for check in doctor(config):
     print(check.ok, check.name, check.detail)
 
-result = run_round(config, on_human_gate="fail")
-print(result.status, result.gate_reached, result.artifacts)
+result = run_round(config, on_human_gate="stop")
+print(result.run_id, result.status, result.gate_reached, result.artifacts)
 ```
 
 `RoundConfig` loads/validates a per-project YAML; `run_round` builds and executes the
-`attractor run ...` invocation shown above and inspects the artifacts it produces;
-`doctor` runs read-only environment diagnostics. None of these re-implement pipeline
-stages — they orchestrate runs of `pipelines/simulated-user-research.dot`.
+`attractor run ...` invocation shown above, inspects the artifacts it produces, and
+appends the run's record to the `rounds.jsonl` ledger; `doctor` runs read-only
+environment diagnostics. The triage helpers (`load_findings`, `run_triage`,
+`record_triage`, `precision_summary`) grade a run's findings and persist the verdicts
+(see "Run identity, ledger, and triage"). None of these re-implement pipeline stages —
+they orchestrate runs of `pipelines/simulated-user-research.dot`.
 
 ### L3 — agent-callable tools
 
@@ -129,15 +147,50 @@ gate-reached result is success, not failure).
 ### L4 — the CLI
 
 ```bash
-asur init --dir my-round/                 # scaffold project.yaml + personas/
-# edit my-round/project.yaml and my-round/personas/*.md
+asur init --dir my-round/                 # scaffold project.yaml + personas/ (incl. _TEMPLATE.md)
+# edit my-round/project.yaml and rewrite my-round/personas/*.md for YOUR product
 asur doctor --config my-round/project.yaml
-asur run --config my-round/project.yaml --on-human-gate fail
+asur run --config my-round/project.yaml   # pauses at the approval gate (--on-human-gate stop)
+# read research-spec.md, answer the gate, then grade the findings:
+asur triage --config my-round/project.yaml
 ```
 
 `asur` is a short alias for the `amplifier-simulated-user-research` console script
 (both installed by this package). `asur run` exits `0` for both `"completed"` and
-`"gate_reached"` — the gate is success for an unattended round.
+`"gate_reached"` — the gate is the normal, successful ending for an unattended round.
+`--on-human-gate stop` is the default and the documented choice (`fail` is kept as a
+deprecated alias; the underlying engine flag is still named `fail`).
+
+## Run identity, ledger, and triage
+
+Every run gets a **run_id** (`r-YYYYMMDD-HHMMSS`), passed into the graph as
+`--param run_id` (stamped into its artifacts) and recorded in the ledger. Three
+files carry the instrumentation:
+
+- **`<output_dir>/rounds.jsonl`** — one record appended per run: `run_id`,
+  `ts_start`/`ts_end`, `status`, `gate_reached`, `artifacts`, `wall_clock_s`,
+  `per_stage_wall_clock` (mined from the engine's own per-node `status.json`
+  `duration_ms` in that run's logs dir — `null` when nothing is derivable, never a
+  guess), `prior_run_id` (the previous line's run_id — round N can re-check round
+  N−1's P1s), and `gate`/`triage` (null until triage). The ledger lives in
+  `output_dir` so it travels with the artifacts it describes.
+- **`<output_dir>/findings.json`** — emitted by the synthesis stage (the graph's
+  contract): `{"run_id", "findings": [{"id", "title", "severity", "evidence_tier",
+  "confirmation", "repro", "sources"}]}` — stable finding IDs, evidence-tier labels.
+- **`asur triage --config project.yaml`** — after you answer the gate: grades each
+  finding **real / noise / wont-fix** (~30 seconds), records the gate verdict, and
+  persists both into that run's `rounds.jsonl` record. It then reports the
+  precision-at-gate line, with observed-tier and simulated-tier precision reported
+  separately (persona simulation must not borrow the credibility of machine-checked
+  observations).
+
+**The three metrics this instrumentation exists to answer** (in priority order):
+
+1. **Precision at gate** — % of findings a human graded real, per evidence tier.
+2. **Fix-conversion** — % of P1s actually fixed within 14 days (trace finding IDs
+   from `findings.json` into your tracker/commits).
+3. **Cost + wall-clock receipt per round** — `wall_clock_s` and
+   `per_stage_wall_clock` in the ledger.
 
 ## Install
 
@@ -186,6 +239,19 @@ instead. Unset (the default) for normal use.
   *target application's* login credential personas use).
 - **[`agent-browser`](https://github.com/vercel-labs/agent-browser)** on PATH — the
   capture and persona stages drive it directly.
+  - **ARM64 / custom browser**: agent-browser's managed Chrome-for-Testing channel
+    ships **no Linux ARM64 builds** (`agent-browser install` exits 2 there with an
+    apt suggestion) — the CLI looks healthy while every browser stage fails. Point
+    it at your own binary instead: export
+    `AGENT_BROWSER_EXECUTABLE_PATH=<system chromium, or Playwright's
+    ~/.cache/ms-playwright/chromium_headless_shell-<ver>/chrome-linux/headless_shell>`
+    and `AGENT_BROWSER_ARGS="--no-sandbox"` — or set the equivalent
+    `browser_executable_path` / `browser_args` keys in `project.yaml` (`run_round`
+    exports them into the pipeline environment, so the project carries the fix
+    instead of your shell). `asur doctor` launch-tests the browser for real (`open
+    about:blank` + close — note this closes any live agent-browser session, so
+    don't run doctor mid-round) and suggests the newest Playwright headless_shell
+    it finds on the box.
 - **The browser-node bundle registered** once:
   ```bash
   amplifier bundle add file:///abs/path/to/amplifier-simulated-user-research/browser-node-agent.yaml \
@@ -200,12 +266,16 @@ the above plus the pipeline's own files.
 
 ```bash
 asur init --dir my-round/
-# edit my-round/project.yaml:
-#   target_url, seed_command, seed_cwd, output_dir, app_source_hint,
-#   api_key or api_key_env
-# review/replace my-round/personas/*.md for your product
+# 1. edit my-round/project.yaml:
+#      target_url, seed_command, seed_cwd, output_dir, app_source_hint,
+#      api_key or api_key_env
+#    (validation rejects the REPLACE-ME placeholders until you do)
+# 2. rewrite my-round/personas/*.md session tasks for YOUR product
+#    (keep identity + temperament; start from personas/_TEMPLATE.md)
 asur doctor --config my-round/project.yaml
 asur run --config my-round/project.yaml
+# read research-spec.md, answer the gate, then:
+asur triage --config my-round/project.yaml
 ```
 
 ## Personas
@@ -225,6 +295,19 @@ Personas are per-project inputs: point `personas_dir` at your own roster for oth
 products. The graph is static, so the roster size = the number of persona node
 pairs in the `.dot` (copy a `check_personaN`/`personaN` pair to extend, and add a
 matching field to `RoundConfig.personas`).
+
+**Authoring personas** (see `personas/_TEMPLATE.md` for the annotated version):
+the shipped briefs' session tasks name a *specific* product's surfaces (a
+WhatsApp-triage product) — rewrite the tasks for your product, keep identity +
+temperament. The load-bearing mechanism: ONE falsifiable temperament rule per
+persona; **declare the yes/no bar in advance** (a verdict judged against a bar
+invented afterwards can justify anything); write session tasks as numbered,
+falsifiable probes; **tag scripted steers with `PROBE:`** in the brief so reports
+can't launder them as spontaneous discoveries; and backstory motivates tasks but is
+**never admissible as severity evidence** — severity is justified by the product's
+own promise, not by invented biography. `asur doctor` warns when your briefs are
+still byte-identical to the shipped roster (unchanged defaults against a different
+product = findings will be fiction).
 
 ## Provenance
 

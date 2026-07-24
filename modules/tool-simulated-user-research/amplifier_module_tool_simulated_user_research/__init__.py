@@ -31,12 +31,15 @@ class RunResearchRoundTool:
     @property
     def description(self) -> str:
         return (
-            "Run one simulated-user-research round: seeds a scratch instance, "
+            "Run one user-research-style AUDIT round: seeds a scratch instance, "
             "captures screens, runs IA/responsive design reviews and N persona "
-            "sessions, then synthesizes an implementation-ready spec. Stops at "
-            "a human approval gate by default (on_human_gate='fail') -- that is "
-            "the expected, successful way an unattended round ends, not a "
-            "failure. Can take many minutes (real LLM + browser sessions)."
+            "sessions (real browser, real seeded instance), then synthesizes an "
+            "implementation-ready spec + findings.json. Observed findings are "
+            "real and reproducible; persona reactions/verdicts are simulation "
+            "(hypotheses, not user testimony). Pauses at a human approval gate "
+            "by default (on_human_gate='stop') -- that is the expected, "
+            "successful way an unattended round ends, not a failure. Can take "
+            "many minutes (real LLM + browser sessions)."
         )
 
     @property
@@ -50,8 +53,12 @@ class RunResearchRoundTool:
                 },
                 "on_human_gate": {
                     "type": "string",
-                    "enum": ["fail", "auto-approve"],
-                    "description": "How to handle the approval gate (default: fail).",
+                    "enum": ["stop", "fail", "auto-approve"],
+                    "description": (
+                        "How to handle the approval gate (default: stop -- pause "
+                        "at the gate, the normal ending for an unattended run; "
+                        "'fail' is a deprecated alias for stop)."
+                    ),
                 },
             },
             "required": ["config_path"],
@@ -61,7 +68,7 @@ class RunResearchRoundTool:
         from amplifier_simulated_user_research import RoundConfig, run_round
 
         config_path = input_data["config_path"]
-        on_human_gate = input_data.get("on_human_gate", "fail")
+        on_human_gate = input_data.get("on_human_gate", "stop")
 
         def _run() -> dict[str, Any]:
             config = RoundConfig.from_yaml(config_path)
@@ -71,11 +78,15 @@ class RunResearchRoundTool:
             result = run_round(config, on_human_gate=on_human_gate)
             return {
                 "ok": result.status in {"completed", "gate_reached"},
+                "run_id": result.run_id,
                 "status": result.status,
                 "exit_code": result.exit_code,
                 "gate_reached": result.gate_reached,
                 "artifacts": {k: str(v) for k, v in result.artifacts.items()},
                 "logs_dir": str(result.logs_dir) if result.logs_dir else None,
+                "rounds_ledger": str(result.rounds_path)
+                if result.rounds_path
+                else None,
             }
 
         try:

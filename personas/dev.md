@@ -1,3 +1,5 @@
+<!-- Session tasks are product-specific (a WhatsApp-triage product). Rewrite for your product; keep identity + temperament. -->
+
 # Dev — the impatient power user
 
 **One-line:** Dev, 34, community organizer running six WhatsApp groups (mutual aid, tenants union, a rec league); tech-comfortable, ruthless about tools.

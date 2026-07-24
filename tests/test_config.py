@@ -57,6 +57,99 @@ class TestRoundConfigValidate:
         assert any("unknown provider" in p for p in problems)
 
 
+class TestSentinelValidation:
+    def test_replace_me_in_seed_command_rejected(self):
+        config = RoundConfig(
+            **_minimal_kwargs(seed_command="echo 'REPLACE ME: seed your instance'")
+        )
+        problems = config.validate()
+        assert any(
+            "edit project.yaml before running (asur init wrote placeholder values)" in p
+            for p in problems
+        )
+        assert any("seed_command" in p for p in problems)
+
+    def test_replace_me_underscore_in_api_key_env_rejected(self):
+        config = RoundConfig(
+            **_minimal_kwargs(api_key=None, api_key_env="REPLACE_ME_API_KEY_ENV_VAR")
+        )
+        problems = config.validate()
+        assert any("placeholder" in p for p in problems)
+        assert any("api_key_env" in p for p in problems)
+
+    def test_replace_me_in_paths_rejected(self):
+        config = RoundConfig(
+            **_minimal_kwargs(
+                seed_cwd="/REPLACE_ME/absolute/path/to/your/app",
+                app_source_hint="/REPLACE_ME/absolute/path/to/your/app/src",
+            )
+        )
+        problems = config.validate()
+        offending = [p for p in problems if "placeholder" in p]
+        assert len(offending) == 1
+        assert "seed_cwd" in offending[0] and "app_source_hint" in offending[0]
+
+    def test_replace_me_in_persona_name_rejected(self):
+        config = RoundConfig(
+            **_minimal_kwargs(personas=["marisol", "dev", "REPLACE_ME"])
+        )
+        problems = config.validate()
+        assert any("personas[2]" in p for p in problems)
+
+    def test_clean_config_has_no_sentinel_problem(self):
+        config = RoundConfig(**_minimal_kwargs())
+        assert not any("placeholder" in p for p in config.validate())
+
+    def test_fresh_init_starter_config_is_rejected(self):
+        """The exact config `asur init` writes must fail validation until edited."""
+        from amplifier_simulated_user_research.cli import _build_starter_config
+
+        problems = _build_starter_config().validate()
+        assert any(
+            "edit project.yaml before running (asur init wrote placeholder values)" in p
+            for p in problems
+        )
+
+
+class TestBrowserEnv:
+    def test_empty_by_default(self):
+        config = RoundConfig(**_minimal_kwargs())
+        assert config.browser_env() == {}
+
+    def test_exports_both_vars_when_configured(self):
+        config = RoundConfig(
+            **_minimal_kwargs(
+                browser_executable_path="/opt/pw/chromium_headless_shell-1181/chrome-linux/headless_shell",
+                browser_args="--no-sandbox",
+            )
+        )
+        assert config.browser_env() == {
+            "AGENT_BROWSER_EXECUTABLE_PATH": "/opt/pw/chromium_headless_shell-1181/chrome-linux/headless_shell",
+            "AGENT_BROWSER_ARGS": "--no-sandbox",
+        }
+
+    def test_expands_user_in_executable_path(self):
+        config = RoundConfig(
+            **_minimal_kwargs(browser_executable_path="~/bin/headless_shell")
+        )
+        path = config.browser_env()["AGENT_BROWSER_EXECUTABLE_PATH"]
+        assert "~" not in path and path.endswith("/bin/headless_shell")
+
+    def test_round_trips_through_yaml(self, tmp_path):
+        config = RoundConfig(
+            **_minimal_kwargs(
+                browser_executable_path="/opt/headless_shell",
+                browser_args="--no-sandbox",
+            )
+        )
+        config_path = tmp_path / "project.yaml"
+        config_path.write_text(yaml.safe_dump(config.to_yaml_dict()), encoding="utf-8")
+
+        reloaded = RoundConfig.from_yaml(config_path)
+        assert reloaded.browser_executable_path == "/opt/headless_shell"
+        assert reloaded.browser_args == "--no-sandbox"
+
+
 class TestRoundConfigApiKey:
     def test_resolves_from_api_key(self):
         config = RoundConfig(**_minimal_kwargs(api_key="literal-key"))

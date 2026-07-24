@@ -19,6 +19,14 @@ import yaml
 
 _REQUIRED_PERSONA_COUNT = 3
 
+# Placeholder tokens `asur init` writes into the starter project.yaml.
+# validate() rejects any value still carrying one -- running a round against
+# placeholder settings produces confidently wrong output, not an error.
+_SENTINEL_TOKENS = ("REPLACE ME", "REPLACE_ME")
+_SENTINEL_MESSAGE = (
+    "edit project.yaml before running (asur init wrote placeholder values)"
+)
+
 
 def _package_repo_root() -> Path:
     """Best-effort default for `sur_repo_dir`.
@@ -54,6 +62,14 @@ class RoundConfig:
     sur_repo_dir: str | None = None
     provider: str = "anthropic"
     logs_root: str | None = None
+    # Optional custom-browser passthrough (e.g. Linux ARM64, where
+    # agent-browser's managed Chrome-for-Testing channel ships no builds and
+    # `agent-browser install` exits 2 -- see README "ARM64 / custom browser").
+    # run_round() exports these into the pipeline subprocess environment as
+    # AGENT_BROWSER_EXECUTABLE_PATH / AGENT_BROWSER_ARGS, so the project.yaml
+    # can carry the fix instead of the caller's shell.
+    browser_executable_path: str | None = None
+    browser_args: str | None = None
     # Optional escape hatch for local development against an unmerged /
     # not-yet-released attractor checkout. When set, the runner shells out
     # via `uv run --project <attractor_checkout>/modules/pipeline-runner
@@ -118,6 +134,24 @@ class RoundConfig:
             )
         raise ValueError("RoundConfig needs either api_key or api_key_env")
 
+    def browser_env(self) -> dict[str, str]:
+        """Env vars for a custom browser binary, ready to merge into a subprocess env.
+
+        Empty dict when neither key is configured (the common case --
+        agent-browser's own managed browser is used). run_round() merges
+        this over os.environ for the pipeline subprocess; doctor()'s
+        launchability probe uses the same merge so it tests exactly what a
+        run would use.
+        """
+        env: dict[str, str] = {}
+        if self.browser_executable_path:
+            env["AGENT_BROWSER_EXECUTABLE_PATH"] = str(
+                Path(self.browser_executable_path).expanduser()
+            )
+        if self.browser_args:
+            env["AGENT_BROWSER_ARGS"] = self.browser_args
+        return env
+
     def resolved_sur_repo_dir(self) -> Path:
         """Absolute path to the amplifier-simulated-user-research repo root."""
         return (
@@ -165,7 +199,38 @@ class RoundConfig:
                 f"unknown provider {self.provider!r} (known: anthropic, openai, gemini)"
             )
 
+        sentinel_fields = self._fields_with_sentinels()
+        if sentinel_fields:
+            problems.append(
+                f"{_SENTINEL_MESSAGE}: placeholder found in {', '.join(sentinel_fields)}"
+            )
+
         return problems
+
+    def _fields_with_sentinels(self) -> list[str]:
+        """Names of fields still carrying an `asur init` placeholder token."""
+        values: dict[str, str] = {
+            "target_url": self.target_url,
+            "seed_command": self.seed_command,
+            "seed_cwd": self.seed_cwd,
+            "personas_dir": self.personas_dir,
+            "output_dir": self.output_dir,
+            "app_source_hint": self.app_source_hint,
+            "api_key": self.api_key or "",
+            "api_key_env": self.api_key_env or "",
+            "browser_bundle": self.browser_bundle,
+            "sur_repo_dir": self.sur_repo_dir or "",
+            "browser_executable_path": self.browser_executable_path or "",
+            "browser_args": self.browser_args or "",
+        }
+        for i, persona in enumerate(self.personas):
+            values[f"personas[{i}]"] = persona
+
+        return [
+            name
+            for name, value in values.items()
+            if any(token in value for token in _SENTINEL_TOKENS)
+        ]
 
     def to_dot_params(self) -> dict[str, str]:
         """Build the flat `--param key=value` map the .dot graph expects.
@@ -205,5 +270,7 @@ class RoundConfig:
             "sur_repo_dir": self.sur_repo_dir,
             "provider": self.provider,
             "logs_root": self.logs_root,
+            "browser_executable_path": self.browser_executable_path,
+            "browser_args": self.browser_args,
             "attractor_checkout": self.attractor_checkout,
         }

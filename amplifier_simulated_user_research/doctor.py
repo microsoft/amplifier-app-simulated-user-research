@@ -7,6 +7,7 @@ runs a pipeline -- just answers "is my environment set up correctly?"
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -21,14 +22,27 @@ PROVIDER_KEY_ENV: dict[str, str] = {
     "gemini": "GEMINI_API_KEY",
 }
 
+# Launch-probe timeouts (seconds). Kept short: doctor is a preflight, and a
+# healthy agent-browser opens about:blank well inside these bounds.
+_BROWSER_OPEN_TIMEOUT_S = 45
+_BROWSER_CLOSE_TIMEOUT_S = 15
+
 
 @dataclass
 class DoctorCheck:
-    """One diagnostic result: a named check, whether it passed, and detail."""
+    """One diagnostic result: a named check, whether it passed, and detail.
+
+    `warn` marks a check that passed (ok=True, exit code unaffected) but
+    carries a condition the human should read before trusting a run's
+    output -- e.g. persona briefs still byte-identical to the shipped
+    roster (the run would produce findings about a product the briefs
+    weren't written for).
+    """
 
     name: str
     ok: bool
     detail: str
+    warn: bool = False
 
 
 def _check_attractor_cli(config: RoundConfig | None) -> DoctorCheck:
@@ -61,6 +75,135 @@ def _check_agent_browser() -> DoctorCheck:
         False,
         "not found -- install github.com/vercel-labs/agent-browser; "
         "required by the capture/persona browser tool-nodes",
+    )
+
+
+def _detect_playwright_headless_shell() -> str | None:
+    """Newest Playwright chromium_headless_shell binary on this box, if any.
+
+    Playwright installs versioned builds under
+    ~/.cache/ms-playwright/chromium_headless_shell-<build>/chrome-linux/headless_shell.
+    Returns the highest-build binary that actually exists, else None. Sorted
+    numerically (build 1181 > build 999 -- lexicographic sort gets this wrong).
+    """
+    base = Path.home() / ".cache" / "ms-playwright"
+    if not base.is_dir():
+        return None
+    best: tuple[int, Path] | None = None
+    for entry in base.glob("chromium_headless_shell-*"):
+        m = re.search(r"(\d+)$", entry.name)
+        if not m:
+            continue
+        binary = entry / "chrome-linux" / "headless_shell"
+        if not binary.is_file():
+            continue
+        build = int(m.group(1))
+        if best is None or build > best[0]:
+            best = (build, binary)
+    return str(best[1]) if best else None
+
+
+def _browser_remediation() -> str:
+    """Remediation text for a failed browser launch, covering both arches."""
+    detected = _detect_playwright_headless_shell()
+    if detected:
+        arm64_path = f"{detected} (newest under ~/.cache/ms-playwright)"
+    else:
+        arm64_path = (
+            "/path/to/chromium-or-headless_shell (none found under "
+            "~/.cache/ms-playwright -- install one with "
+            "`playwright install chromium-headless-shell`, or use a system chromium)"
+        )
+    return (
+        "Remediation: on x86_64, run `agent-browser install`. On Linux ARM64 "
+        "(Chrome-for-Testing ships NO linux-arm64 builds; `agent-browser "
+        "install` exits 2 there), point agent-browser at your own binary: "
+        f"export AGENT_BROWSER_EXECUTABLE_PATH={arm64_path} and "
+        'AGENT_BROWSER_ARGS="--no-sandbox" -- or set the equivalent '
+        "browser_executable_path / browser_args keys in project.yaml."
+    )
+
+
+def _probe_browser_launch(env: dict[str, str]) -> tuple[bool, str]:
+    """Actually exercise `agent-browser open about:blank` + close.
+
+    Presence on PATH isn't enough -- agent-browser can silently lose its
+    managed browser (live incident: no Chrome-for-Testing builds exist for
+    Linux ARM64, so every browser stage failed while the CLI itself looked
+    healthy). Returns (ok, detail).
+
+    Resilience: ALWAYS attempts `agent-browser close --all` afterwards so
+    no daemon/state is left behind regardless of outcome. NOTE this also
+    closes any other live agent-browser session on the box -- avoid running
+    doctor while a research round is mid-flight.
+    """
+    exe = shutil.which("agent-browser")
+    if not exe:
+        return False, "agent-browser not found on PATH"
+    try:
+        proc = subprocess.run(
+            [exe, "open", "about:blank"],
+            capture_output=True,
+            text=True,
+            timeout=_BROWSER_OPEN_TIMEOUT_S,
+            env=env,
+            check=False,
+        )
+        if proc.returncode == 0:
+            return True, "launched a real browser (open about:blank + close)"
+        tail = (proc.stderr or proc.stdout or "").strip()[-300:]
+        return (
+            False,
+            f"`agent-browser open about:blank` exited {proc.returncode}: {tail}",
+        )
+    except subprocess.TimeoutExpired:
+        return (
+            False,
+            f"`agent-browser open about:blank` timed out after {_BROWSER_OPEN_TIMEOUT_S}s",
+        )
+    except OSError as e:
+        return False, f"could not run agent-browser: {e}"
+    finally:
+        try:
+            subprocess.run(
+                [exe, "close", "--all"],
+                capture_output=True,
+                text=True,
+                timeout=_BROWSER_CLOSE_TIMEOUT_S,
+                env=env,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+
+def _check_browser_launchable(config: RoundConfig | None) -> DoctorCheck:
+    """FAIL (not warn) when agent-browser cannot actually launch a browser.
+
+    Respects the current environment plus the config's browser_env()
+    overrides (browser_executable_path / browser_args), so this tests
+    exactly what run_round() would use.
+    """
+    env = dict(os.environ)
+    overrides = config.browser_env() if config else {}
+    env.update(overrides)
+
+    configured_path = overrides.get("AGENT_BROWSER_EXECUTABLE_PATH")
+    if configured_path and not Path(configured_path).is_file():
+        return DoctorCheck(
+            "browser launchable",
+            False,
+            f"configured browser_executable_path not found: {configured_path}. "
+            + _browser_remediation(),
+        )
+
+    ok, detail = _probe_browser_launch(env)
+    if ok:
+        if overrides:
+            detail += f" (using {', '.join(sorted(overrides))} from project.yaml)"
+        return DoctorCheck("browser launchable", True, detail)
+    return DoctorCheck(
+        "browser launchable", False, f"{detail}. {_browser_remediation()}"
     )
 
 
@@ -142,6 +285,50 @@ def _check_browser_bundle_registered(browser_bundle: str) -> DoctorCheck:
     )
 
 
+def _check_personas_customized(
+    personas_dir: str, personas: list[str], sur_repo_dir: Path
+) -> DoctorCheck:
+    """Warn when configured briefs are byte-identical to the shipped roster.
+
+    The shipped briefs' session tasks name a SPECIFIC product's surfaces
+    (a WhatsApp-triage product). Run unchanged against a different product,
+    the personas probe screens that don't exist -- the findings will be
+    fiction. This is a warning (ok=True, warn=True), not a failure: the one
+    legitimate byte-identical case is auditing the product the roster was
+    originally written for, and doctor cannot distinguish that from neglect.
+    """
+    p = Path(personas_dir).expanduser()
+    shipped_dir = sur_repo_dir / "personas"
+    identical: list[str] = []
+    for name in personas:
+        configured = p / f"{name}.md"
+        shipped = shipped_dir / f"{name}.md"
+        if not configured.is_file() or not shipped.is_file():
+            continue
+        try:
+            if configured.read_bytes() == shipped.read_bytes():
+                identical.append(f"{name}.md")
+        except OSError:
+            continue
+
+    if identical:
+        return DoctorCheck(
+            "personas customized",
+            True,
+            f"{', '.join(identical)} byte-identical to the shipped roster -- "
+            f"those briefs' session tasks were written for a WhatsApp-triage "
+            f"product. Unchanged defaults against another product = findings "
+            f"will be fiction. Rewrite session tasks for YOUR product (keep "
+            f"identity + temperament; see personas/_TEMPLATE.md).",
+            warn=True,
+        )
+    return DoctorCheck(
+        "personas customized",
+        True,
+        "configured briefs differ from the shipped roster",
+    )
+
+
 def _check_personas_dir(personas_dir: str, personas: list[str]) -> DoctorCheck:
     p = Path(personas_dir).expanduser()
     if not p.is_dir():
@@ -179,6 +366,7 @@ def doctor(config: RoundConfig | None = None) -> list[DoctorCheck]:
         _check_attractor_cli(config),
         _check_pipeline_runner_importable(),
         _check_agent_browser(),
+        _check_browser_launchable(config),
         _check_provider_key(provider),
         _check_dot_file(sur_repo_dir),
         _check_scripts_dir(sur_repo_dir),
@@ -188,5 +376,10 @@ def doctor(config: RoundConfig | None = None) -> list[DoctorCheck]:
     if config is not None:
         checks.append(_check_browser_bundle_registered(config.browser_bundle))
         checks.append(_check_personas_dir(config.personas_dir, config.personas))
+        checks.append(
+            _check_personas_customized(
+                config.personas_dir, config.personas, sur_repo_dir
+            )
+        )
 
     return checks

@@ -37,18 +37,24 @@
 //   each of these four nodes is now shape=parallelogram (tool), shelling
 //   out to scripts/run_browser_node.py, which runs the SAME task as a
 //   completely separate, single-shot `amplifier run --mode single
-//   --output-format json` session under browser-node-agent.yaml (a local
-//   overlay bundle in this same directory) and captures that session's
-//   raw final response TEXT as the deliverable. A text-only final reply
+//   --output-format json-trace` session under browser-node-agent.yaml (a
+//   local overlay bundle in this same directory) and captures that
+//   session's raw final response TEXT as the deliverable (json-trace,
+//   not plain json, so the wrapper can also verify the browser genuinely
+//   ran -- see the BROWSER-RAN PROOF header note below). A text-only final reply
 //   is no longer a failure mode for these four nodes — it is the expected
 //   way a single-shot session ends, and it's exactly what gets written to
 //   the report file. See scripts/run_browser_node.py's module docstring
 //   for the full investigation (why no loop-agent config knob exists) and
 //   the "MECHANISM CHANGE" comment block on each converted node below.
-//   The verify_* file-ground-truth quality gates (byte-size check +
-//   bounded retry + loud hard_stop) downstream of each of these nodes are
-//   COMPLETELY UNCHANGED — this fix only changes HOW the report gets
-//   written, never what counts as "good enough."
+//   The verify_* file-ground-truth quality gates (content-contract check
+//   via scripts/validate_artifact.py + bounded retry + loud hard_stop)
+//   downstream of each of these nodes keep the SAME shape (ok/retry/
+//   hard_stop routing, bounded-retry counter, terminal hard_stop node)
+//   as when this comment was first written -- only the judgment inside
+//   the check changed (content contract, not byte floor; see the
+//   HARDENING SPRINT header note above), never the retry/hard-stop
+//   mechanics themselves.
 //
 // * REVIEW + SYNTHESIS BOXES ARE DELIBERATELY UNCHANGED: review_ia,
 //   review_responsive, and synthesis remain shape=box (real spawned
@@ -100,6 +106,68 @@
 //   unmatched-edge failure across the whole graph — a real footgun. Put
 //   retry_target on the node that needs it (see `synthesis` below).
 //
+// * HARDENING SPRINT (3rd council round) -- ARTIFACT CONTRACTS REPLACE BYTE
+//   FLOORS: every check_*/verify_* node below used to judge an artifact by
+//   `test -f X && wc -c >= N` alone -- a byte count is a length check
+//   wearing a completeness costume. Three councils independently found the
+//   smoking gun: a showcase capture-notes.md passed its byte-floor gate at
+//   1,800 bytes while documenting 4 of 11 screens and ending with the
+//   literal line "## In Progress -- Additional Screens (to be completed)",
+//   was re-grandfathered by the IDENTICAL resume guard on every later run
+//   (check_ and verify_ shared the same floor, so a partial artifact could
+//   never heal -- it entombed itself), and synthesis then certified
+//   "Missing inputs: None." Every check_*/verify_* node below now calls
+//   scripts/validate_artifact.py <type> <path> [--screens-dir D] [--run-id
+//   R] [--findings-json F] instead -- ONE shared, content-aware contract per
+//   artifact type, called with THE SAME arguments from both the skip-guard
+//   AND the quality-gate. That symmetry is the fix: a partial artifact now
+//   FAILS check_*'s skip-guard too, so the stage is not skipped, it re-runs,
+//   and it heals via the partial-draft-resume mechanism already built into
+//   run_browser_node.py. See that script's module docstring for the full
+//   per-type contract (required sections, cited-screenshot existence,
+//   placeholder rejection, Run ID staleness, findings.json schema).
+//
+// * BROWSER-RAN PROOF: a dead target_url (or a model that narrates a
+//   plausible-looking session without ever touching the browser) used to be
+//   indistinguishable from a genuine walkthrough -- both produced a report
+//   that read fine and passed a byte-floor check. capture_screens and
+//   persona1-3 now invoke run_browser_node.py with `amplifier run
+//   --output-format json-trace` (not plain json), giving the wrapper the
+//   session's own tool-call trace -- real, ground-truth agent-browser
+//   invocations and their real exit codes, not the model's self-report. Zero
+//   real navigations or zero real screenshots -> the wrapper REFUSES to
+//   write the report at all (loud stderr reason), so verify_<stage>'s
+//   file-ground-truth check sees a missing/stale artifact and drives its
+//   existing retry/hard-stop path. A `.session-manifest-<report-stem>.json`
+//   sidecar is always written recording the raw counts for humans debugging
+//   a hard-stop. See run_browser_node.py's module docstring, item 1.
+//
+// * RUN ID: every artifact this pipeline produces stamps "Run ID: $run_id"
+//   in its header -- mechanically for the four tool-node browser stages
+//   (run_browser_node.py's `_stamp_header` prepends it before writing, never
+//   left to model compliance) and via explicit prompt instruction (the
+//   literal value substitutes into the prompt before the model ever sees
+//   it, so the model is asked to reproduce a value it was handed, not
+//   asked to invent one) for the box nodes (review_ia, review_responsive,
+//   synthesis). `run_id` is a REQUIRED graph param with no default --
+//   callers pass e.g. `--param run_id=r-20260723-140501`.
+//
+// * REVISION STALENESS: gate_feedback's revision path now snapshots
+//   research-spec.md's hash BEFORE re-running synthesis (snapshot_spec_hash)
+//   and hard-stops loudly (check_revision_progress) if synthesis produced a
+//   byte-identical spec -- catching the "failed/no-op revision silently
+//   returns the stale spec" narrate-and-die class at the mechanism level
+//   instead of trusting the model to notice its own non-change.
+//
+// * RETRY SUBSTRATE HARDENING: every retry-counter write below is now
+//   `&&`-guarded (write to a .tmp file, `mv` into place, and only then
+//   branch on the count) so that a FAILED counter write halts loudly
+//   (hard_stop) rather than silently retrying forever with a counter that
+//   never advances on disk. Every hard_stop_* node now also clears its own
+//   counter file before halting, so a later legitimate re-run (after a
+//   human fixes whatever caused the hard stop) gets a fresh retry budget
+//   instead of hard-stopping again immediately on a stale count.
+//
 // ============================================================================
 
 digraph SimulatedUserResearch {
@@ -119,6 +187,20 @@ digraph SimulatedUserResearch {
 
     // ------------------------------------------------------------------
     // Required params (pass via `attractor run --param key=value`, every run):
+    //   run_id           -- this round's unique run identifier, e.g.
+    //                       r-20260723-140501 (no default -- the CONTRACT
+    //                       with the parallel lib/CLI build is that the
+    //                       lib always passes --param run_id=r-YYYYMMDD-HHMMSS).
+    //                       Stamped as "Run ID: $run_id" in every artifact
+    //                       header (mechanically for the four browser
+    //                       tool-nodes via run_browser_node.py's
+    //                       _stamp_header; via prompt substitution for the
+    //                       box nodes) and validated by
+    //                       scripts/validate_artifact.py on every
+    //                       check_*/verify_* gate -- an artifact whose Run
+    //                       ID doesn't match this run's is treated as stale
+    //                       and fails its gate rather than being silently
+    //                       accepted as already-done.
     //   target_url       -- base URL of the scratch instance to test
     //   api_key          -- API key/credential personas use to log in
     //   seed_command     -- full shell command (with its own flags) that
@@ -201,7 +283,7 @@ digraph SimulatedUserResearch {
     check_capture [
         shape=parallelogram,
         label="Capture done?",
-        tool_command="if [ -f \"${output_dir}/capture-notes.md\" ] && [ $(wc -c < \"${output_dir}/capture-notes.md\") -ge 800 ]; then printf done; else printf todo; fi"
+        tool_command="python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" capture \"${output_dir}/capture-notes.md\" --screens-dir \"${output_dir}/screens\" --run-id \"${run_id}\" >/dev/null 2>&1 && printf done || printf todo"
     ]
 
     // ------------------------------------------------------------------
@@ -222,8 +304,8 @@ digraph SimulatedUserResearch {
     // STRUCTURAL FIX: this is now shape=parallelogram (tool node) that
     // shells out to scripts/run_browser_node.py, which runs the same task
     // as a completely separate SINGLE-SHOT `amplifier run --mode single
-    // --output-format json` session and captures that session's raw final
-    // response TEXT as the deliverable -- written to capture-notes.md by
+    // --output-format json-trace` session and captures that session's raw
+    // final response TEXT as the deliverable -- written to capture-notes.md by
     // the wrapper script itself, not by the model remembering to call a
     // file-write tool as its last action. A text-only final reply is no
     // longer a failure mode for this stage; it is now the expected way a
@@ -234,10 +316,11 @@ digraph SimulatedUserResearch {
     //
     // The tool_command always exits 0 (note the trailing `|| true`):
     // exactly like the ORIGINAL box node, this node's own reported
-    // outcome is NOT the quality gate -- verify_capture below (UNCHANGED)
-    // is the sole judge of whether capture-notes.md is real and
-    // sufficient, via the same file-ground-truth check + bounded retry +
-    // loud hard_stop it always used. This node's job is only to run the
+    // outcome is NOT the quality gate -- verify_capture below is the sole
+    // judge of whether capture-notes.md is real and sufficient, via a
+    // content-contract check (scripts/validate_artifact.py, see the
+    // HARDENING SPRINT header note) + bounded retry + loud hard_stop.
+    // This node's job is only to run the
     // subprocess and get out of the way; retrying a bad/missing result is
     // still entirely verify_capture's job (its "retry" edge loops back to
     // this very node).
@@ -246,7 +329,7 @@ digraph SimulatedUserResearch {
         class="capture browser",
         label="Visual Capture (single-shot subprocess)",
         timeout="4200",
-        tool_command="python3 \"${sur_repo_dir}/scripts/run_browser_node.py\" --role capture --bundle \"${browser_bundle}\" --target-url \"${target_url}\" --api-key \"${api_key}\" --output-dir \"${output_dir}\" --report-path \"${output_dir}/capture-notes.md\" --timeout-s 4000 || true"
+        tool_command="python3 \"${sur_repo_dir}/scripts/run_browser_node.py\" --role capture --bundle \"${browser_bundle}\" --target-url \"${target_url}\" --api-key \"${api_key}\" --output-dir \"${output_dir}\" --report-path \"${output_dir}/capture-notes.md\" --run-id \"${run_id}\" --timeout-s 4000 || true"
     ]
 
     check_capture -> capture_screens [label="todo", condition="context.tool.last_line=todo"]
@@ -277,7 +360,7 @@ digraph SimulatedUserResearch {
     verify_capture [
         shape=parallelogram,
         label="Capture artifact verified?",
-        tool_command="if [ -f \"${output_dir}/capture-notes.md\" ] && [ $(wc -c < \"${output_dir}/capture-notes.md\") -ge 800 ]; then rm -f \"${output_dir}/.capture-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.capture-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.capture-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
+        tool_command="if python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" capture \"${output_dir}/capture-notes.md\" --screens-dir \"${output_dir}/screens\" --run-id \"${run_id}\"; then rm -f \"${output_dir}/.capture-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.capture-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); if printf '%s' \"$cnt\" > \"${output_dir}/.capture-retry-count.tmp\" && mv \"${output_dir}/.capture-retry-count.tmp\" \"${output_dir}/.capture-retry-count\"; then if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; else printf hard_stop; fi; fi"
     ]
 
     verify_capture -> parallel_reviews  [label="ok",        condition="context.tool.last_line=ok"]
@@ -287,7 +370,7 @@ digraph SimulatedUserResearch {
     hard_stop_capture [
         shape=parallelogram,
         label="HALT: capture-notes.md missing",
-        tool_command="printf 'FATAL: %s/capture-notes.md was never written after capture_screens ran 3 times (1 initial + 2 retries). Visual capture cannot be considered complete -- downstream design reviews and synthesis have no capture artifact to read. Inspect %s/screens/ for partial output and the node status.json logs to see why capture_screens reported success without writing the file (e.g. max_agent_turns exhaustion mid-walkthrough).\\n' \"${output_dir}\" \"${output_dir}\" 1>&2; exit 1"
+        tool_command="rm -f \"${output_dir}/.capture-retry-count\"; printf 'FATAL: %s/capture-notes.md never satisfied its artifact contract after capture_screens ran 3 times (1 initial + 2 retries). Visual capture cannot be considered complete -- downstream design reviews and synthesis have no capture artifact to read. Inspect %s/screens/ for partial output, .session-manifest-capture-notes.json for browser-ran proof counts, and the node status.json logs to see why capture_screens reported success without writing a contract-satisfying file (e.g. max_agent_turns exhaustion mid-walkthrough, or zero real browser navigations detected). The retry counter has been cleared so a later re-run (after a human fixes the underlying cause) gets a fresh budget.\\n' \"${output_dir}\" \"${output_dir}\" 1>&2; exit 1"
     ]
 
     // ==================================================================
@@ -311,7 +394,7 @@ digraph SimulatedUserResearch {
     check_review_ia [
         shape=parallelogram,
         label="IA review done?",
-        tool_command="if [ -f \"${output_dir}/review-ia.md\" ] && [ $(wc -c < \"${output_dir}/review-ia.md\") -ge 1500 ]; then printf done; else printf todo; fi"
+        tool_command="python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" review \"${output_dir}/review-ia.md\" --run-id \"${run_id}\" >/dev/null 2>&1 && printf done || printf todo"
     ]
 
     review_ia [
@@ -333,7 +416,7 @@ Task:
 Evaluate the information architecture and layout of the product: navigation structure, hierarchy/grouping of content, discoverability of key actions, labeling/wording clarity, visual hierarchy (what draws the eye first vs what should), and whether the screen-to-screen flow makes sense for a first-time user. Cross-reference what you see in the screenshots against the actual source to catch discrepancies between intended and shipped behavior.
 
 Output:
-Write your complete findings to $output_dir/review-ia.md with these exact sections:
+Write your complete findings to $output_dir/review-ia.md, starting with the literal line `Run ID: $run_id` as the very first line of the file (this is how downstream stages and a human at the gate confirm which round produced this artifact -- copy the value verbatim, do not invent your own), then these exact sections:
   ## Summary (2-3 sentences: overall IA health)
   ## Navigation & Structure
   ## Hierarchy & Discoverability
@@ -341,9 +424,9 @@ Write your complete findings to $output_dir/review-ia.md with these exact sectio
   ## Specific Issues Found (numbered; each with screen/file reference, description, severity P1/P2/P3)
   ## Recommendations (prioritized, concrete)
 
-The review must be substantive and complete before you finish — a bare section skeleton with no real findings does not satisfy this task.
+The review must be substantive and complete before you finish — a bare section skeleton with no real findings does not satisfy this task. Never write a placeholder like \"(in progress)\" or \"to be completed\" anywhere in the file -- an incomplete review is a failed review that will be rejected and retried, not a partial pass.
 
-Before reporting anything, verify your own work with a tool call: run `wc -c $output_dir/review-ia.md` and confirm it is at least 1500 bytes. Only after seeing that confirmed should you report success (via report_outcome if available, else a brief final text summary)."
+Before reporting anything, verify your own work with a tool call: run `wc -c $output_dir/review-ia.md` and confirm it is at least 1500 bytes, AND confirm the first line reads exactly `Run ID: $run_id`. Only after seeing that confirmed should you report success (via report_outcome if available, else a brief final text summary)."
     ]
 
     // DEFECT 2 fix, review branch: same file-ground-truth verify pattern as
@@ -366,7 +449,7 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
     verify_review_ia [
         shape=parallelogram,
         label="IA review artifact verified?",
-        tool_command="if [ -f \"${output_dir}/review-ia.md\" ] && [ $(wc -c < \"${output_dir}/review-ia.md\") -ge 1500 ]; then rm -f \"${output_dir}/.review-ia-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.review-ia-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.review-ia-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
+        tool_command="if python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" review \"${output_dir}/review-ia.md\" --run-id \"${run_id}\"; then rm -f \"${output_dir}/.review-ia-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.review-ia-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); if printf '%s' \"$cnt\" > \"${output_dir}/.review-ia-retry-count.tmp\" && mv \"${output_dir}/.review-ia-retry-count.tmp\" \"${output_dir}/.review-ia-retry-count\"; then if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; else printf hard_stop; fi; fi"
     ]
 
     verify_review_ia -> reviews_fan_in     [label="ok",       condition="context.tool.last_line=ok"]
@@ -380,13 +463,13 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
     fail_review_ia [
         shape=parallelogram,
         label="Branch FAIL: review-ia.md missing",
-        tool_command="printf 'FAIL (branch-local): %s/review-ia.md was never written after review_ia ran 3 times (1 initial + 2 retries). This branch is marked failed; the OTHER review branch and the rest of the pipeline continue by design (error_policy=continue). synthesis will list this as a Missing input.\\n' \"${output_dir}\" 1>&2; exit 1"
+        tool_command="rm -f \"${output_dir}/.review-ia-retry-count\"; printf 'FAIL (branch-local): %s/review-ia.md never satisfied its artifact contract after review_ia ran 3 times (1 initial + 2 retries). This branch is marked failed; the OTHER review branch and the rest of the pipeline continue by design (error_policy=continue). synthesis will list this as a Missing input. The retry counter has been cleared so a later re-run gets a fresh budget.\\n' \"${output_dir}\" 1>&2; exit 1"
     ]
 
     check_review_responsive [
         shape=parallelogram,
         label="Responsive review done?",
-        tool_command="if [ -f \"${output_dir}/review-responsive.md\" ] && [ $(wc -c < \"${output_dir}/review-responsive.md\") -ge 1500 ]; then printf done; else printf todo; fi"
+        tool_command="python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" review \"${output_dir}/review-responsive.md\" --run-id \"${run_id}\" >/dev/null 2>&1 && printf done || printf todo"
     ]
 
     review_responsive [
@@ -408,23 +491,23 @@ Task:
 Evaluate how well the product adapts across the two captured viewport widths (mobile ~390px, desktop ~1280px): breakpoint correctness, touch target/hit-area sizing on mobile, text reflow and truncation, layout shifts or broken grids, whether desktop uses the extra space well (vs just a stretched mobile layout), and any input-related issues (e.g. font-size under 16px causing mobile zoom, hover-only affordances with no touch equivalent).
 
 Output:
-Write your complete findings to $output_dir/review-responsive.md with these exact sections:
+Write your complete findings to $output_dir/review-responsive.md, starting with the literal line `Run ID: $run_id` as the very first line of the file (this is how downstream stages and a human at the gate confirm which round produced this artifact -- copy the value verbatim, do not invent your own), then these exact sections:
   ## Summary (2-3 sentences: overall responsive health)
   ## Breakpoint Behavior
   ## Touch/Input Concerns
   ## Layout Issues by Screen (numbered; each with screen/file reference, mobile vs desktop comparison, severity P1/P2/P3)
   ## Recommendations (prioritized, concrete)
 
-The review must be substantive and complete before you finish — a bare section skeleton with no real findings does not satisfy this task.
+The review must be substantive and complete before you finish — a bare section skeleton with no real findings does not satisfy this task. Never write a placeholder like \"(in progress)\" or \"to be completed\" anywhere in the file -- an incomplete review is a failed review that will be rejected and retried, not a partial pass.
 
-Before reporting anything, verify your own work with a tool call: run `wc -c $output_dir/review-responsive.md` and confirm it is at least 1500 bytes. Only after seeing that confirmed should you report success (via report_outcome if available, else a brief final text summary)."
+Before reporting anything, verify your own work with a tool call: run `wc -c $output_dir/review-responsive.md` and confirm it is at least 1500 bytes, AND confirm the first line reads exactly `Run ID: $run_id`. Only after seeing that confirmed should you report success (via report_outcome if available, else a brief final text summary)."
     ]
 
     // Same file-ground-truth verify pattern as verify_review_ia above.
     verify_review_responsive [
         shape=parallelogram,
         label="Responsive review artifact verified?",
-        tool_command="if [ -f \"${output_dir}/review-responsive.md\" ] && [ $(wc -c < \"${output_dir}/review-responsive.md\") -ge 1500 ]; then rm -f \"${output_dir}/.review-responsive-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.review-responsive-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.review-responsive-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
+        tool_command="if python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" review \"${output_dir}/review-responsive.md\" --run-id \"${run_id}\"; then rm -f \"${output_dir}/.review-responsive-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.review-responsive-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); if printf '%s' \"$cnt\" > \"${output_dir}/.review-responsive-retry-count.tmp\" && mv \"${output_dir}/.review-responsive-retry-count.tmp\" \"${output_dir}/.review-responsive-retry-count\"; then if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; else printf hard_stop; fi; fi"
     ]
 
     verify_review_responsive -> reviews_fan_in       [label="ok",        condition="context.tool.last_line=ok"]
@@ -434,7 +517,7 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
     fail_review_responsive [
         shape=parallelogram,
         label="Branch FAIL: review-responsive.md missing",
-        tool_command="printf 'FAIL (branch-local): %s/review-responsive.md was never written after review_responsive ran 3 times (1 initial + 2 retries). This branch is marked failed; the OTHER review branch and the rest of the pipeline continue by design (error_policy=continue). synthesis will list this as a Missing input.\\n' \"${output_dir}\" 1>&2; exit 1"
+        tool_command="rm -f \"${output_dir}/.review-responsive-retry-count\"; printf 'FAIL (branch-local): %s/review-responsive.md never satisfied its artifact contract after review_responsive ran 3 times (1 initial + 2 retries). This branch is marked failed; the OTHER review branch and the rest of the pipeline continue by design (error_policy=continue). synthesis will list this as a Missing input. The retry counter has been cleared so a later re-run gets a fresh budget.\\n' \"${output_dir}\" 1>&2; exit 1"
     ]
 
     parallel_reviews -> check_review_ia
@@ -464,7 +547,7 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
     check_persona1 [
         shape=parallelogram,
         label="Persona 1 done?",
-        tool_command="if [ -f \"${output_dir}/persona-${persona1}.md\" ] && [ $(wc -c < \"${output_dir}/persona-${persona1}.md\") -ge 1500 ]; then printf done; else printf todo; fi"
+        tool_command="python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" persona \"${output_dir}/persona-${persona1}.md\" --run-id \"${run_id}\" >/dev/null 2>&1 && printf done || printf todo"
     ]
 
     // ------------------------------------------------------------------
@@ -479,9 +562,9 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
     // now shape=parallelogram, shelling out to scripts/run_browser_node.py
     // for a single-shot session whose raw final response text IS the
     // friction-log deliverable, written to persona-$persona1.md by the
-    // wrapper script itself. verify_persona1 below is UNCHANGED and
-    // remains the sole quality gate (file-ground-truth size check +
-    // bounded retry + loud hard_stop) -- this node's tool_command always
+    // wrapper script itself. verify_persona1 below remains the sole
+    // quality gate (content-contract check via scripts/validate_artifact.py
+    // + bounded retry + loud hard_stop) -- this node's tool_command always
     // exits 0 (`|| true`) so a subprocess-level failure routes through to
     // verify_persona1 (which will correctly see a missing/undersized file
     // and drive the retry/hard-stop path) rather than dead-ending on an
@@ -491,7 +574,7 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
         class="persona browser",
         label="Persona Session 1 (single-shot subprocess)",
         timeout="3600",
-        tool_command="python3 \"${sur_repo_dir}/scripts/run_browser_node.py\" --role persona --bundle \"${browser_bundle}\" --target-url \"${target_url}\" --api-key \"${api_key}\" --output-dir \"${output_dir}\" --report-path \"${output_dir}/persona-${persona1}.md\" --persona-name \"${persona1}\" --personas-dir \"${personas_dir}\" --timeout-s 3500 || true"
+        tool_command="python3 \"${sur_repo_dir}/scripts/run_browser_node.py\" --role persona --bundle \"${browser_bundle}\" --target-url \"${target_url}\" --api-key \"${api_key}\" --output-dir \"${output_dir}\" --report-path \"${output_dir}/persona-${persona1}.md\" --persona-name \"${persona1}\" --personas-dir \"${personas_dir}\" --run-id \"${run_id}\" --timeout-s 3500 || true"
     ]
 
     check_persona1 -> persona1 [label="todo", condition="context.tool.last_line=todo"]
@@ -509,7 +592,7 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
     verify_persona1 [
         shape=parallelogram,
         label="Persona 1 artifact verified?",
-        tool_command="if [ -f \"${output_dir}/persona-${persona1}.md\" ] && [ $(wc -c < \"${output_dir}/persona-${persona1}.md\") -ge 1500 ]; then rm -f \"${output_dir}/.persona1-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.persona1-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.persona1-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
+        tool_command="if python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" persona \"${output_dir}/persona-${persona1}.md\" --run-id \"${run_id}\"; then rm -f \"${output_dir}/.persona1-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.persona1-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); if printf '%s' \"$cnt\" > \"${output_dir}/.persona1-retry-count.tmp\" && mv \"${output_dir}/.persona1-retry-count.tmp\" \"${output_dir}/.persona1-retry-count\"; then if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; else printf hard_stop; fi; fi"
     ]
 
     verify_persona1 -> check_persona2   [label="ok",       condition="context.tool.last_line=ok"]
@@ -519,13 +602,13 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
     hard_stop_persona1 [
         shape=parallelogram,
         label="HALT: persona-1 artifact missing",
-        tool_command="printf 'FATAL: %s/persona-%s.md was never written after persona1 ran 3 times (1 initial + 2 retries). This is the sequential persona chain -- synthesis needs every persona report. Inspect node status.json logs to see why persona1 reported success without writing the file (e.g. max_agent_turns exhaustion mid-session).\\n' \"${output_dir}\" \"${persona1}\" 1>&2; exit 1"
+        tool_command="rm -f \"${output_dir}/.persona1-retry-count\"; printf 'FATAL: %s/persona-%s.md never satisfied its artifact contract after persona1 ran 3 times (1 initial + 2 retries). This is the sequential persona chain -- synthesis needs every persona report. Inspect node status.json logs, .session-manifest-persona-%s.json for browser-ran proof counts, to see why persona1 reported success without writing a contract-satisfying file (e.g. max_agent_turns exhaustion mid-session, or zero real browser navigations detected). The retry counter has been cleared so a later re-run gets a fresh budget.\\n' \"${output_dir}\" \"${persona1}\" \"${persona1}\" 1>&2; exit 1"
     ]
 
     check_persona2 [
         shape=parallelogram,
         label="Persona 2 done?",
-        tool_command="if [ -f \"${output_dir}/persona-${persona2}.md\" ] && [ $(wc -c < \"${output_dir}/persona-${persona2}.md\") -ge 1500 ]; then printf done; else printf todo; fi"
+        tool_command="python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" persona \"${output_dir}/persona-${persona2}.md\" --run-id \"${run_id}\" >/dev/null 2>&1 && printf done || printf todo"
     ]
 
     // MECHANISM CHANGE: same fix as persona1 above -- see persona1's
@@ -536,7 +619,7 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
         class="persona browser",
         label="Persona Session 2 (single-shot subprocess)",
         timeout="3600",
-        tool_command="python3 \"${sur_repo_dir}/scripts/run_browser_node.py\" --role persona --bundle \"${browser_bundle}\" --target-url \"${target_url}\" --api-key \"${api_key}\" --output-dir \"${output_dir}\" --report-path \"${output_dir}/persona-${persona2}.md\" --persona-name \"${persona2}\" --personas-dir \"${personas_dir}\" --timeout-s 3500 || true"
+        tool_command="python3 \"${sur_repo_dir}/scripts/run_browser_node.py\" --role persona --bundle \"${browser_bundle}\" --target-url \"${target_url}\" --api-key \"${api_key}\" --output-dir \"${output_dir}\" --report-path \"${output_dir}/persona-${persona2}.md\" --persona-name \"${persona2}\" --personas-dir \"${personas_dir}\" --run-id \"${run_id}\" --timeout-s 3500 || true"
     ]
 
     check_persona2 -> persona2 [label="todo", condition="context.tool.last_line=todo"]
@@ -546,7 +629,7 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
     verify_persona2 [
         shape=parallelogram,
         label="Persona 2 artifact verified?",
-        tool_command="if [ -f \"${output_dir}/persona-${persona2}.md\" ] && [ $(wc -c < \"${output_dir}/persona-${persona2}.md\") -ge 1500 ]; then rm -f \"${output_dir}/.persona2-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.persona2-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.persona2-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
+        tool_command="if python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" persona \"${output_dir}/persona-${persona2}.md\" --run-id \"${run_id}\"; then rm -f \"${output_dir}/.persona2-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.persona2-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); if printf '%s' \"$cnt\" > \"${output_dir}/.persona2-retry-count.tmp\" && mv \"${output_dir}/.persona2-retry-count.tmp\" \"${output_dir}/.persona2-retry-count\"; then if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; else printf hard_stop; fi; fi"
     ]
 
     verify_persona2 -> check_persona3   [label="ok",       condition="context.tool.last_line=ok"]
@@ -556,13 +639,13 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
     hard_stop_persona2 [
         shape=parallelogram,
         label="HALT: persona-2 artifact missing",
-        tool_command="printf 'FATAL: %s/persona-%s.md was never written after persona2 ran 3 times (1 initial + 2 retries). This is the sequential persona chain -- synthesis needs every persona report. Inspect node status.json logs to see why persona2 reported success without writing the file (e.g. max_agent_turns exhaustion mid-session).\\n' \"${output_dir}\" \"${persona2}\" 1>&2; exit 1"
+        tool_command="rm -f \"${output_dir}/.persona2-retry-count\"; printf 'FATAL: %s/persona-%s.md never satisfied its artifact contract after persona2 ran 3 times (1 initial + 2 retries). This is the sequential persona chain -- synthesis needs every persona report. Inspect node status.json logs, .session-manifest-persona-%s.json for browser-ran proof counts, to see why persona2 reported success without writing a contract-satisfying file (e.g. max_agent_turns exhaustion mid-session, or zero real browser navigations detected). The retry counter has been cleared so a later re-run gets a fresh budget.\\n' \"${output_dir}\" \"${persona2}\" \"${persona2}\" 1>&2; exit 1"
     ]
 
     check_persona3 [
         shape=parallelogram,
         label="Persona 3 done?",
-        tool_command="if [ -f \"${output_dir}/persona-${persona3}.md\" ] && [ $(wc -c < \"${output_dir}/persona-${persona3}.md\") -ge 1500 ]; then printf done; else printf todo; fi"
+        tool_command="python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" persona \"${output_dir}/persona-${persona3}.md\" --run-id \"${run_id}\" >/dev/null 2>&1 && printf done || printf todo"
     ]
 
     // MECHANISM CHANGE: same fix as persona1/persona2 above -- see
@@ -573,7 +656,7 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
         class="persona browser",
         label="Persona Session 3 (single-shot subprocess)",
         timeout="3600",
-        tool_command="python3 \"${sur_repo_dir}/scripts/run_browser_node.py\" --role persona --bundle \"${browser_bundle}\" --target-url \"${target_url}\" --api-key \"${api_key}\" --output-dir \"${output_dir}\" --report-path \"${output_dir}/persona-${persona3}.md\" --persona-name \"${persona3}\" --personas-dir \"${personas_dir}\" --timeout-s 3500 || true"
+        tool_command="python3 \"${sur_repo_dir}/scripts/run_browser_node.py\" --role persona --bundle \"${browser_bundle}\" --target-url \"${target_url}\" --api-key \"${api_key}\" --output-dir \"${output_dir}\" --report-path \"${output_dir}/persona-${persona3}.md\" --persona-name \"${persona3}\" --personas-dir \"${personas_dir}\" --run-id \"${run_id}\" --timeout-s 3500 || true"
     ]
 
     check_persona3 -> persona3 [label="todo", condition="context.tool.last_line=todo"]
@@ -583,7 +666,7 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
     verify_persona3 [
         shape=parallelogram,
         label="Persona 3 artifact verified?",
-        tool_command="if [ -f \"${output_dir}/persona-${persona3}.md\" ] && [ $(wc -c < \"${output_dir}/persona-${persona3}.md\") -ge 1500 ]; then rm -f \"${output_dir}/.persona3-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.persona3-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.persona3-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
+        tool_command="if python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" persona \"${output_dir}/persona-${persona3}.md\" --run-id \"${run_id}\"; then rm -f \"${output_dir}/.persona3-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.persona3-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); if printf '%s' \"$cnt\" > \"${output_dir}/.persona3-retry-count.tmp\" && mv \"${output_dir}/.persona3-retry-count.tmp\" \"${output_dir}/.persona3-retry-count\"; then if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; else printf hard_stop; fi; fi"
     ]
 
     verify_persona3 -> check_synthesis  [label="ok",       condition="context.tool.last_line=ok"]
@@ -593,7 +676,7 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
     hard_stop_persona3 [
         shape=parallelogram,
         label="HALT: persona-3 artifact missing",
-        tool_command="printf 'FATAL: %s/persona-%s.md was never written after persona3 ran 3 times (1 initial + 2 retries). This is the sequential persona chain -- synthesis needs every persona report. Inspect node status.json logs to see why persona3 reported success without writing the file (e.g. max_agent_turns exhaustion mid-session).\\n' \"${output_dir}\" \"${persona3}\" 1>&2; exit 1"
+        tool_command="rm -f \"${output_dir}/.persona3-retry-count\"; printf 'FATAL: %s/persona-%s.md never satisfied its artifact contract after persona3 ran 3 times (1 initial + 2 retries). This is the sequential persona chain -- synthesis needs every persona report. Inspect node status.json logs, .session-manifest-persona-%s.json for browser-ran proof counts, to see why persona3 reported success without writing a contract-satisfying file (e.g. max_agent_turns exhaustion mid-session, or zero real browser navigations detected). The retry counter has been cleared so a later re-run gets a fresh budget.\\n' \"${output_dir}\" \"${persona3}\" \"${persona3}\" 1>&2; exit 1"
     ]
 
     // ==================================================================
@@ -608,7 +691,7 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
     check_synthesis [
         shape=parallelogram,
         label="Spec exists?",
-        tool_command="if [ -f \"${output_dir}/research-spec.md\" ] && [ $(wc -c < \"${output_dir}/research-spec.md\") -ge 1500 ]; then printf done; else printf todo; fi"
+        tool_command="python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" spec \"${output_dir}/research-spec.md\" --run-id \"${run_id}\" --findings-json \"${output_dir}/findings.json\" >/dev/null 2>&1 && printf done || printf todo"
     ]
 
     synthesis [
@@ -621,9 +704,16 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
         goal_gate=true,
         retry_target="synthesis",
         max_retries="2",
-        prompt="You are conducting the SYNTHESIS stage of a simulated-user-research round — the final consolidation before human review.
+        prompt="You are conducting the SYNTHESIS stage of a simulated-user-research round — the final consolidation before human review. This round's Run ID is: $run_id (stamp this exact value, verbatim, wherever this prompt asks for a Run ID — never invent your own, never write 'unknown').
 
-IMPORTANT — how your session ends: replying with text and no tool call ENDS your session immediately. Never narrate an intention ('let me write the spec now') as a text-only reply — call the tool in that same turn instead. Until research-spec.md is written and verified, every reply must contain a tool call.
+IMPORTANT — how your session ends: replying with text and no tool call ENDS your session immediately. Never narrate an intention ('let me write the spec now') as a text-only reply — call the tool in that same turn instead. Until BOTH research-spec.md and findings.json are written and verified, every reply must contain a tool call.
+
+EPISTEMIC HONESTY (this is the whole point of this stage — read carefully): this round mixes [OBSERVED] machine-checkable facts (capture notes, bug tables with repro steps) with [SIMULATED] persona judgment (one LLM in three costumes, not three real humans) and your own [INFERRED] synthesis hypotheses. Never present these at equal authority. Use this confirmation vocabulary EXACTLY, never substitute a synonym:
+  - REPRODUCED (N sessions) — an [OBSERVED] bug independently reproduced by N different sessions (personas and/or reviews) with matching repro steps.
+  - OBSERVED (1 session) — an [OBSERVED] bug seen in exactly one session, with repro steps.
+  - RAISED BY N/3 PERSONAS — a [SIMULATED] friction point or opinion multiple personas independently raised, with NO independent machine-checkable repro (a feeling, not a bug).
+  - RELATED FINDING — two findings that plausibly share a root cause but were not independently confirmed the same way; RELATED is NEVER a synonym for CONFIRMED — do not upgrade a RELATED FINDING to REPRODUCED just because it feels connected.
+Persona P-labels (P1/P2/P3 severity guesses in source reports) are SOURCE ATTRIBUTION ONLY, never your final severity call — you assign ONE severity taxonomy yourself: CRITICAL/HIGH/MEDIUM/LOW, justified by the product's own stated promise or observed behavior, never by a persona's personal preference or backstory. If you demote a persona's P1 to something lower, say so explicitly: 'Demoted from P1 because: <reason>.' Parked Items can never sit above MEDIUM — if something is genuinely CRITICAL/HIGH it does not belong in Parked Items, full stop.
 
 Read EVERY artifact in $output_dir that EXISTS (check each path before reading it — do not assume all six are present):
   - $output_dir/capture-notes.md
@@ -632,33 +722,59 @@ Read EVERY artifact in $output_dir that EXISTS (check each path before reading i
   - $output_dir/persona-$persona1.md
   - $output_dir/persona-$persona2.md
   - $output_dir/persona-$persona3.md
-  - (if present from a prior revision pass) $output_dir/research-spec.md — if this file already exists, treat your prior version as a DRAFT to revise, not a blank slate. If a human provided feedback in this turn (it will appear above this prompt as 'Human response at gate ...'), that feedback is the primary driver of what to change — read it carefully and apply it.
+  - (if present from a prior revision pass) $output_dir/research-spec.md — if this file already exists, treat your prior version as a DRAFT to revise, not a blank slate. If a human provided feedback in this turn (it will appear above this prompt as 'Human response at gate ...'), that feedback is the primary driver of what to change — read it carefully and apply it. A revision pass that does not actually change research-spec.md is treated as a hard failure downstream (see the .dot's revision-staleness check) — make a real, substantive change in response to the feedback, not a cosmetic no-op.
 
-DEFENSIVE INPUT CHECK — do this first, before synthesizing: the upstream pipeline enforces file-existence guards on capture and each persona (they hard-stop the whole run if missing), but the two design-review artifacts (review-ia.md, review-responsive.md) run in a parallel branch with error_policy=continue, so it is possible to reach this stage with one or both of them absent. Never silently proceed as if a missing artifact simply doesn't exist / was never in scope. For EVERY one of the six expected artifact paths above that is NOT present on disk, record it under a top-level '## Missing inputs' heading (see Output below) naming the exact path and stating that this round's synthesis proceeded without it — do not fabricate or infer its content, and do not quietly omit any cross-reference claims that would have depended on it.
+DEFENSIVE INPUT CHECK — do this first, before synthesizing: the upstream pipeline enforces file-existence guards on capture and each persona (they hard-stop the whole run if missing), but the two design-review artifacts (review-ia.md, review-responsive.md) run in a parallel branch with error_policy=continue, so it is possible to reach this stage with one or both of them absent. Never silently proceed as if a missing artifact simply doesn't exist / was never in scope. Track every missing path for the Provenance appendix (see Output below) — do not fabricate or infer its content, and do not quietly omit any cross-reference claims that would have depended on it.
 
 Task:
-Consolidate all findings into a SINGLE implementation-ready spec, built ONLY from the artifacts that actually exist. Cross-reference across artifacts: a bug or friction point independently observed by MULTIPLE personas or BOTH design reviews is a P1 — call this out explicitly as 'cross-persona confirmed' or 'confirmed by N/3 personas' (adjust the denominator honestly if a source is missing per your Missing inputs note). Do not simply concatenate the source documents — synthesize, deduplicate, and prioritize.
+Consolidate all findings into a SINGLE implementation-ready spec, built ONLY from the artifacts that actually exist. Cross-reference across artifacts using the confirmation vocabulary above — adjust denominators honestly if a source is missing. Do not simply concatenate the source documents — synthesize, deduplicate, and prioritize. For every finding tagged evidence_tier OBSERVED, carry its FULL repro steps INTO the spec (not just a pointer back to the source report — a human reading only the spec must be able to replay it). If a source report tagged something `PROBE (scripted in brief):`, preserve that tag in the spec — a scripted probe finding is still legitimate, but it must never be presented as a spontaneous discovery. If a source report marked a claim `HYPOTHESIS:` (a guess about real, non-simulated users), carry that marking into the spec unchanged — never launder a HYPOTHESIS into a confirmed finding.
 
-Output:
-Write (or overwrite, on a revision pass) $output_dir/research-spec.md with these exact sections:
+Output (TWO files, both required — the spec is for humans, findings.json is for machines):
+
+FILE 1 — Write (or overwrite, on a revision pass) $output_dir/research-spec.md with, in this exact order:
+  > Simulated session: an LLM synthesizing across simulated persona sessions and design reviews of a real instance. Product behaviors (bug tables, timings, network checks) cited below were observed in-session and are reproducible. Persona verdicts and reactions cited below are simulation — hypotheses about this user class, not testimony.
+
+  Run ID: $run_id
+
+  ## Verdict Summary
+  (markdown table: | Persona | Verdict (simulated) | Dealbreaker one-liner | — one row per persona, pulled from each persona report's Verdict section)
+  ## Findings At a Glance
+  (markdown table: | # | Sev | Title | Evidence tier | Confirmation | — one row per finding, # matching findings.json's id field, Sev one of CRITICAL/HIGH/MEDIUM/LOW, Evidence tier one of OBSERVED/SIMULATED/INFERRED, Confirmation using the exact vocabulary above)
   ## Summary
-  (3-5 sentences: overall health, biggest risk, biggest opportunity)
-  ## Missing inputs
-  (list any of the six expected artifact paths above that were absent when this synthesis ran, and what that means for the confidence of any related findings below; write 'None — all expected inputs were present.' if nothing was missing)
-  ## P1 Bugs (cross-persona/cross-review confirmed)
-  (numbered; each with description, which personas/reviews confirmed it, suggested fix)
+  (≤3 sentences: overall health, biggest risk, biggest opportunity — this is the 60-second read, keep it tight)
+  ## Detailed Findings
+  (one subsection per finding from Findings At a Glance, in the same order and numbering; each: full description, evidence tier + confirmation restated, REPRO STEPS in full for every OBSERVED finding, suggested fix, and 'Demoted from P1 because: ...' if applicable)
   ## Prioritized Changes
-  (ranked list, most important first; each with rationale tied back to specific evidence)
+  (ranked list, most important first; each with rationale tied back to a specific finding #)
   ## Copy Fixes
   (specific text changes: current wording -> suggested wording, with the reason)
   ## Parked Items
-  (real issues that are lower priority or out of scope for this round — do not lose them, just don't block on them)
+  (real issues that are lower priority or out of scope for this round — do not lose them, just don't block on them; NEVER above MEDIUM severity — if something belongs here it is MEDIUM or LOW by definition)
   ## Sources
   (list every artifact you actually read, so a human can trace any claim back to its evidence)
+  ## Provenance
+  (machine-status plumbing lives here, not in the 60-second-read sections above: '### Missing inputs' — list any of the six expected artifact paths that were absent when this synthesis ran, and what that means for the confidence of any related findings above; write 'None — all expected inputs were present.' if nothing was missing. '### Source paths' — the six expected artifact paths and whether each was present.)
 
-The spec must be substantive and complete before you finish — a bare section skeleton does not satisfy this task.
+The spec must be substantive and complete before you finish — a bare section skeleton does not satisfy this task. Never write a placeholder like \"(in progress)\" or \"to be completed\" anywhere in the file.
 
-Before reporting anything, verify your own work with a tool call: run `wc -c $output_dir/research-spec.md` and confirm it is at least 1500 bytes. Only after seeing that confirmed should you report success (via report_outcome if available, else a brief final text summary)."
+FILE 2 — Write (or overwrite, on a revision pass) $output_dir/findings.json as a SINGLE JSON object (not wrapped in markdown fences, valid JSON, parseable by `python3 -m json.tool`):
+  {
+    \"run_id\": \"$run_id\",
+    \"findings\": [
+      {
+        \"id\": \"F-01\",
+        \"title\": \"short finding title\",
+        \"severity\": \"CRITICAL\" | \"HIGH\" | \"MEDIUM\" | \"LOW\",
+        \"evidence_tier\": \"OBSERVED\" | \"SIMULATED\" | \"INFERRED\",
+        \"confirmation\": \"REPRODUCED\" | \"OBSERVED_SINGLE\" | \"RAISED_BY_PERSONAS\" | \"RELATED\",
+        \"repro\": [\"step 1\", \"step 2\"],
+        \"sources\": [\"persona-marisol.md\", \"review-ia.md\"]
+      }
+    ]
+  }
+Every finding in Findings At a Glance / Detailed Findings in the spec must have a matching entry here with the SAME id and SAME severity/evidence_tier/confirmation values — the spec and findings.json are two views of the same data, never allowed to disagree. `repro` may be an empty list for SIMULATED/INFERRED findings (they have no machine repro by definition) but MUST be non-empty for every OBSERVED finding. `sources` must always be non-empty.
+
+Before reporting anything, verify your own work with tool calls: run `wc -c $output_dir/research-spec.md` and confirm it is at least 1500 bytes; run `python3 -m json.tool $output_dir/findings.json` and confirm it parses with no error; confirm research-spec.md's second non-blank line reads exactly `Run ID: $run_id`. Only after seeing ALL THREE confirmed should you report success (via report_outcome if available, else a brief final text summary)."
     ]
 
     check_synthesis -> synthesis [label="todo", condition="context.tool.last_line=todo"]
@@ -679,17 +795,50 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
     verify_synthesis [
         shape=parallelogram,
         label="Synthesis artifact verified?",
-        tool_command="if [ -f \"${output_dir}/research-spec.md\" ] && [ $(wc -c < \"${output_dir}/research-spec.md\") -ge 1500 ]; then rm -f \"${output_dir}/.synthesis-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.synthesis-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.synthesis-retry-count\"; if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; fi"
+        tool_command="if python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" spec \"${output_dir}/research-spec.md\" --run-id \"${run_id}\" --findings-json \"${output_dir}/findings.json\"; then rm -f \"${output_dir}/.synthesis-retry-count\"; printf ok; else cnt=$(cat \"${output_dir}/.synthesis-retry-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); if printf '%s' \"$cnt\" > \"${output_dir}/.synthesis-retry-count.tmp\" && mv \"${output_dir}/.synthesis-retry-count.tmp\" \"${output_dir}/.synthesis-retry-count\"; then if [ \"$cnt\" -gt 2 ]; then printf hard_stop; else printf retry; fi; else printf hard_stop; fi; fi"
     ]
 
-    verify_synthesis -> gate               [label="ok",        condition="context.tool.last_line=ok"]
+    verify_synthesis -> check_revision_progress [label="ok",   condition="context.tool.last_line=ok"]
     verify_synthesis -> synthesis          [label="retry",     condition="context.tool.last_line=retry"]
     verify_synthesis -> hard_stop_synthesis [label="hard stop", condition="context.tool.last_line=hard_stop"]
 
     hard_stop_synthesis [
         shape=parallelogram,
         label="HALT: research-spec.md missing",
-        tool_command="printf 'FATAL: %s/research-spec.md was never written after synthesis ran 3 times (1 initial + 2 retries). There is nothing to show the human at the approval gate. Inspect node status.json logs to see why synthesis reported success without writing the file.\\n' \"${output_dir}\" 1>&2; exit 1"
+        tool_command="rm -f \"${output_dir}/.synthesis-retry-count\" \"${output_dir}/.pre-revision-spec-hash\"; printf 'FATAL: %s/research-spec.md never satisfied its artifact contract after synthesis ran 3 times (1 initial + 2 retries). There is nothing to show the human at the approval gate. Inspect node status.json logs to see why synthesis reported success without writing a contract-satisfying file (research-spec.md AND findings.json are both required). The retry counter has been cleared so a later re-run gets a fresh budget.\\n' \"${output_dir}\" 1>&2; exit 1"
+    ]
+
+    // ------------------------------------------------------------------
+    // REVISION STALENESS CHECK (hardening sprint): a failed or no-op
+    // revision pass used to silently return the stale spec -- synthesis
+    // is a box node (narrate-and-die is structurally possible there, see
+    // run_browser_node.py's module docstring for why synthesis was
+    // deliberately NOT converted to the single-shot wrapper), so this
+    // check targets the EXACT failure mode named without giving up
+    // goal_gate/reasoning_effort/human.gate.text injection. Mechanism:
+    // gate_feedback's revision path snapshots research-spec.md's hash
+    // via snapshot_spec_hash BEFORE re-running synthesis; this node
+    // compares the POST-synthesis hash against that snapshot. If the
+    // snapshot file does not exist at all (the normal first-pass path,
+    // which never goes through gate_feedback), this node passes through
+    // unconditionally -- there is nothing to compare a first pass
+    // against. The snapshot file is consumed (deleted) on every run
+    // through this node, revision or not, so a later independent
+    // revision starts with a clean slate.
+    // ------------------------------------------------------------------
+    check_revision_progress [
+        shape=parallelogram,
+        label="Revision actually changed the spec?",
+        tool_command="if [ ! -f \"${output_dir}/.pre-revision-spec-hash\" ]; then printf changed; else old_hash=$(cat \"${output_dir}/.pre-revision-spec-hash\" 2>/dev/null || printf ''); new_hash=$(sha256sum \"${output_dir}/research-spec.md\" 2>/dev/null | cut -d' ' -f1); rm -f \"${output_dir}/.pre-revision-spec-hash\"; if [ \"$old_hash\" = \"$new_hash\" ] && [ -n \"$new_hash\" ]; then printf stale; else printf changed; fi; fi"
+    ]
+
+    check_revision_progress -> gate                     [label="changed", condition="context.tool.last_line=changed"]
+    check_revision_progress -> hard_stop_revision_stale  [label="stale",   condition="context.tool.last_line=stale"]
+
+    hard_stop_revision_stale [
+        shape=parallelogram,
+        label="HALT: revision produced no change",
+        tool_command="printf 'FATAL: %s/research-spec.md is byte-identical to its pre-revision snapshot -- synthesis ran (goal_gate+artifact-contract both reported success) but produced NO substantive change in response to the human'\''s feedback at the gate. This is the narrate-and-die class named in the hardening brief: a failed/no-op revision must never silently return the stale spec to the human as if the feedback were applied. Inspect the synthesis node'\''s prompt.md/response.md in the run'\''s logs to see what feedback was given and why it produced no textual change.\\n' \"${output_dir}\" 1>&2; exit 1"
     ]
 
     // ==================================================================
@@ -712,7 +861,7 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
     check_revision_cap [
         shape=parallelogram,
         label="Revision cap check (max 3)",
-        tool_command="cnt=$(cat \"${output_dir}/.revision-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); printf '%s' \"$cnt\" > \"${output_dir}/.revision-count\"; if [ \"$cnt\" -gt 3 ]; then printf cap_reached; else printf ok; fi"
+        tool_command="cnt=$(cat \"${output_dir}/.revision-count\" 2>/dev/null || printf 0); cnt=$((cnt + 1)); if printf '%s' \"$cnt\" > \"${output_dir}/.revision-count.tmp\" && mv \"${output_dir}/.revision-count.tmp\" \"${output_dir}/.revision-count\"; then if [ \"$cnt\" -gt 3 ]; then printf cap_reached; else printf ok; fi; else printf cap_reached; fi"
     ]
 
     check_revision_cap -> revision_cap_reached [label="cap reached", condition="context.tool.last_line=cap_reached"]
@@ -721,7 +870,7 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
     revision_cap_reached [
         shape=parallelogram,
         label="Revision Cap Reached",
-        tool_command="printf '\\n\\n---\\n**Note:** revision cap (3) reached; spec finalized as-is at this round.\\n' >> \"${output_dir}/research-spec.md\" && printf done"
+        tool_command="rm -f \"${output_dir}/.revision-count\"; printf '\\n\\n---\\n**Note:** revision cap (3) reached; spec finalized as-is at this round.\\n' >> \"${output_dir}/research-spec.md\" && printf done"
     ]
     revision_cap_reached -> exit
 
@@ -732,9 +881,28 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
         description="Describe what needs to change. Your feedback is passed directly to the synthesis re-run."
     ]
 
+    // REVISION STALENESS (hardening sprint): snapshot research-spec.md's
+    // hash BEFORE synthesis re-runs, so check_revision_progress (wired
+    // after verify_synthesis, upstream of `gate`) can hard-stop loudly if
+    // synthesis produced a byte-identical spec -- see that node's comment
+    // for the full mechanism. A missing/unreadable current spec (should
+    // never happen here since check_revision_cap only reaches this point
+    // after a spec already passed its gate once) degrades to an empty
+    // hash rather than failing this node -- check_revision_progress
+    // treats an empty stored hash as "no prior snapshot" and passes
+    // through, which is the safe default (never block a revision on this
+    // snapshot step itself failing).
+    snapshot_spec_hash [
+        shape=parallelogram,
+        label="Snapshot spec hash (pre-revision)",
+        tool_command="sha256sum \"${output_dir}/research-spec.md\" 2>/dev/null | cut -d' ' -f1 > \"${output_dir}/.pre-revision-spec-hash.tmp\" && mv \"${output_dir}/.pre-revision-spec-hash.tmp\" \"${output_dir}/.pre-revision-spec-hash\"; printf done"
+    ]
+
+    gate_feedback -> snapshot_spec_hash
+
     // No guard here by design — a revision must always re-run synthesis.
     // The human's freeform text is auto-injected as a "Human response at
     // gate ..." preface on synthesis's next prompt by the engine (see
     // gotchas: consume-once human.gate.text injection).
-    gate_feedback -> synthesis
+    snapshot_spec_hash -> synthesis
 }

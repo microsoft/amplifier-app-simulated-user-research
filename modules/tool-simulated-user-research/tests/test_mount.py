@@ -48,8 +48,17 @@ async def test_tools_have_required_properties():
 
 
 @pytest.mark.asyncio
-async def test_research_doctor_execute_runs_real_checks():
-    """research_doctor is cheap and safe -- exercise it for real (no mocking)."""
+async def test_research_doctor_execute_runs_real_checks(monkeypatch):
+    """research_doctor exercised for real -- except the browser launch probe,
+    which is stubbed: it would open/close a real browser AND `close --all`
+    any live agent-browser session (e.g. an in-flight research round)."""
+    import importlib
+
+    doctor_mod = importlib.import_module("amplifier_simulated_user_research.doctor")
+    monkeypatch.setattr(
+        doctor_mod, "_probe_browser_launch", lambda env: (True, "probe stubbed")
+    )
+
     tool = ResearchDoctorTool()
     result = await tool.execute({})
 

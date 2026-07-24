@@ -4,8 +4,10 @@ bundle:
   version: 0.1.0
   description: >
     Agent-callable tools for the simulated-user-research attractor pipeline:
-    run_research_round (drives a full research round against a web product)
-    and research_doctor (environment diagnostics). Thin wrapper over the
+    run_research_round (drives a user-research-style audit round against a web
+    product -- real browser, real seeded instance, reproducible evidence-labeled
+    findings; persona reactions are simulation, hypotheses not testimony) and
+    research_doctor (environment diagnostics). Thin wrapper over the
     amplifier_simulated_user_research lib -- pipelines/simulated-user-research.dot
     remains the pipeline's actual logic home; this bundle never reimplements it.
 
