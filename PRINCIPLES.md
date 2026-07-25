@@ -41,6 +41,12 @@ the manifest, and the logs. Files are the contract: any crash resumes by re-runn
 only what's incomplete. A partial artifact must fail its guard and heal — never
 skip-as-done (the byte-floor entombing bug), never block forever.
 
+Preflight checks validate **capability, not presence**: an external dependency is
+healthy only if it can do the specific thing we need (the browser actually
+launches; the `attractor` binary actually advertises our flags). A check that
+merely confirms a file exists manufactures a false [OK] and moves the failure
+somewhere far less legible — the diagnosis belongs at the earliest honest moment.
+
 ## 5. Outcomes are instrumented
 
 Every run has a run_id stamped through every artifact; every round appends to

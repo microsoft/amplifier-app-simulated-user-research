@@ -36,6 +36,22 @@ def _stub_browser_probe(monkeypatch):
     )
 
 
+def _resolution(command: list[str], source: str, rejected: tuple = ()):
+    """Build an AttractorResolution stand-in for doctor-check tests."""
+    from amplifier_simulated_user_research.runner import AttractorResolution
+
+    return AttractorResolution(command=command, source=source, rejected=rejected)
+
+
+def _raise_runtime_error(message: str):
+    """Return a resolver stub that fails the way a foreign binary makes it fail."""
+
+    def _stub(checkout):
+        raise RuntimeError(message)
+
+    return _stub
+
+
 def _config(tmp_path, **overrides: Any) -> RoundConfig:
     personas_dir = tmp_path / "personas"
     personas_dir.mkdir(exist_ok=True)
@@ -109,6 +125,95 @@ class TestDoctorWithConfig:
         checks = doctor(None)
         dot_check = next(c for c in checks if "pipeline .dot" in c.name)
         assert dot_check.ok is True
+
+
+class TestAttractorCliCheck:
+    """Presence is not identity: doctor must FAIL on a foreign `attractor`.
+
+    The live incident: an unrelated package's binary named `attractor` sat
+    earlier on PATH; doctor reported [OK] on presence alone and the run died
+    later with an inscrutable argparse error.
+    """
+
+    def test_fails_on_foreign_binary_with_reason_and_remedy(self, monkeypatch):
+        monkeypatch.setattr(
+            doctor_mod,
+            "resolve_attractor_resolution",
+            _raise_runtime_error(
+                "no usable attractor engine found. Candidates probed and rejected: "
+                "/usr/local/bin/attractor -- `run --help` does not advertise "
+                "--param, --logs-root, --on-human-gate. The engine is the "
+                "`attractor` console script from amplifier-module-pipeline-runner"
+            ),
+        )
+
+        check = doctor_mod._check_attractor_cli(None)
+
+        assert check.ok is False
+        assert "/usr/local/bin/attractor" in check.detail  # what was found
+        assert "--param" in check.detail  # why rejected
+        assert "amplifier-module-pipeline-runner" in check.detail  # remedy
+
+    def test_ok_reports_resolved_path_and_source(self, monkeypatch):
+        monkeypatch.setattr(
+            doctor_mod,
+            "resolve_attractor_resolution",
+            lambda checkout: _resolution(
+                ["/venv/bin/attractor"], "interpreter-sibling"
+            ),
+        )
+        monkeypatch.setattr(
+            doctor_mod.shutil, "which", lambda name: "/venv/bin/attractor"
+        )
+
+        check = doctor_mod._check_attractor_cli(None)
+
+        assert check.ok is True
+        assert check.warn is False
+        assert "/venv/bin/attractor" in check.detail
+        assert "interpreter-sibling" in check.detail
+        assert "identity-validated" in check.detail
+
+    def test_warns_when_a_different_binary_shadows_ours_on_path(self, monkeypatch):
+        monkeypatch.setattr(
+            doctor_mod,
+            "resolve_attractor_resolution",
+            lambda checkout: _resolution(
+                ["/venv/bin/attractor"], "interpreter-sibling"
+            ),
+        )
+        # PATH's first `attractor` is a DIFFERENT binary than the one we use
+        monkeypatch.setattr(
+            doctor_mod.shutil, "which", lambda name: "/home/u/.local/bin/attractor"
+        )
+
+        check = doctor_mod._check_attractor_cli(None)
+
+        assert check.ok is True  # we routed around it -- not a failure
+        assert check.warn is True
+        assert "/home/u/.local/bin/attractor" in check.detail
+        assert "sibling-first resolution avoided it" in check.detail
+
+    def test_reports_rejected_candidates(self, monkeypatch):
+        monkeypatch.setattr(
+            doctor_mod,
+            "resolve_attractor_resolution",
+            lambda checkout: _resolution(
+                ["/usr/bin/attractor"],
+                "PATH",
+                rejected=(("/bad/attractor", "does not advertise --param"),),
+            ),
+        )
+        monkeypatch.setattr(
+            doctor_mod.shutil, "which", lambda name: "/usr/bin/attractor"
+        )
+
+        check = doctor_mod._check_attractor_cli(None)
+
+        assert check.ok is True
+        assert check.warn is True
+        assert "/bad/attractor" in check.detail
+        assert "does not advertise --param" in check.detail
 
 
 class TestBrowserLaunchProbe:
