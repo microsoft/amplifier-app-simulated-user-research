@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import RoundConfig, _package_repo_root
-from .runner import resolve_attractor_command
+from .runner import resolve_attractor_resolution
 
 PROVIDER_KEY_ENV: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
@@ -46,12 +46,48 @@ class DoctorCheck:
 
 
 def _check_attractor_cli(config: RoundConfig | None) -> DoctorCheck:
+    """Resolve AND identity-validate the engine binary.
+
+    Presence is not identity: `attractor` is a generic binary name and an
+    unrelated tool of the same name shadowed ours on PATH once, turning a
+    doctor [OK] into an inscrutable argparse failure mid-run. Resolution
+    now probes each candidate's `run --help` for the flags we pass, so this
+    check reports OK only for a binary that can actually run our pipeline.
+    """
     attractor_checkout = config.attractor_checkout if config else None
     try:
-        command = resolve_attractor_command(attractor_checkout)
+        resolution = resolve_attractor_resolution(attractor_checkout)
     except RuntimeError as e:
         return DoctorCheck("attractor CLI", False, str(e))
-    return DoctorCheck("attractor CLI", True, f"resolved: {' '.join(command)}")
+
+    detail = f"resolved: {' '.join(resolution.command)} (via {resolution.source})"
+    if resolution.source != "checkout":
+        detail += "; identity-validated"
+
+    notes: list[str] = []
+    if resolution.rejected:
+        notes.append(
+            "candidates rejected: "
+            + "; ".join(f"{path} -- {reason}" for path, reason in resolution.rejected)
+        )
+
+    # Cheap shadow check (no extra probe): if PATH's first `attractor` is not
+    # the binary we resolved, a different tool of the same name is sitting in
+    # front of ours. Not a failure -- sibling-first resolution already routed
+    # around it -- but the operator should know it is there.
+    if resolution.source != "checkout":
+        path_first = shutil.which("attractor")
+        if path_first and Path(path_first) != Path(resolution.command[0]):
+            notes.append(
+                f"note: PATH's first `attractor` is {path_first}, a different "
+                f"binary; sibling-first resolution avoided it"
+            )
+
+    if notes:
+        return DoctorCheck(
+            "attractor CLI", True, f"{detail}. " + " ".join(notes), warn=True
+        )
+    return DoctorCheck("attractor CLI", True, detail)
 
 
 def _check_pipeline_runner_importable() -> DoctorCheck:

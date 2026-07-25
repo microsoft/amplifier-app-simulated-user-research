@@ -8,8 +8,11 @@ subprocess.run is mocked throughout -- these tests never invoke the real
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -23,9 +26,70 @@ from amplifier_simulated_user_research.runner import (
     _parse_attractor_status,
     generate_run_id,
     normalize_gate_policy,
+    reset_attractor_resolution_cache,
     resolve_attractor_command,
+    resolve_attractor_resolution,
     run_round,
+    validate_attractor_binary,
 )
+
+# --- Fake engine binaries (the `attractor` name-collision incident) --------
+#
+# A real, unrelated package installs a binary ALSO named `attractor` at
+# ~/.local/bin. These fakes reproduce both shapes so resolution order and
+# identity validation are pinned by tests rather than by PATH luck.
+
+_OURS_HELP = """\
+usage: attractor run [-h] [--dot-source DOT_SOURCE] [--param k=v]
+                     [--provider PROVIDER] [--logs-root LOGS_ROOT] [--cwd CWD]
+                     [--on-human-gate {fail,auto-approve,console}]
+"""
+
+_FOREIGN_HELP = """\
+usage: attractor [-h] [--serve] [--host HOST] [--port PORT] [--goal GOAL]
+                 [--workdir WORKDIR] [--simulate] [--auto-approve]
+                 [--validate-only] [--logs-dir LOGS_DIR] [dot_file]
+"""
+
+
+def _write_fake_attractor(
+    bin_dir: Path, *, ours: bool = True, exit_code: int = 0
+) -> Path:
+    """Install a fake `attractor` executable into bin_dir; return its path.
+
+    Written as a Python script with an absolute-interpreter shebang, NOT a
+    /bin/sh script: several tests deliberately empty or replace PATH, and a
+    shell fake would then fail to find even `cat` (an earlier version of
+    this helper did exactly that and produced a misleading empty --help).
+    """
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    exe = bin_dir / "attractor"
+    help_text = _OURS_HELP if ours else _FOREIGN_HELP
+    exe.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        f"sys.stdout.write({help_text!r})\n"
+        f"sys.exit({exit_code})\n",
+        encoding="utf-8",
+    )
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return exe
+
+
+def _point_interpreter_at(monkeypatch, bin_dir: Path) -> None:
+    """Make runner treat bin_dir as the running interpreter's directory."""
+    monkeypatch.setattr(
+        "amplifier_simulated_user_research.runner.sys.executable",
+        str(bin_dir / "python3"),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _clear_resolution_cache():
+    """Resolution is cached per process -- isolate every test."""
+    reset_attractor_resolution_cache()
+    yield
+    reset_attractor_resolution_cache()
 
 
 def _config(tmp_path: Path, **overrides: Any) -> RoundConfig:
@@ -76,36 +140,169 @@ def _mock_attractor(monkeypatch, *, returncode: int = 0, stdout: str | None = No
     return captured
 
 
-class TestResolveAttractorCommand:
+class TestValidateAttractorBinary:
+    """Identity, not presence: does this binary speak our engine's CLI?"""
+
+    def test_accepts_our_engine(self, tmp_path):
+        exe = _write_fake_attractor(tmp_path / "bin", ours=True)
+        ok, reason = validate_attractor_binary(exe)
+        assert ok is True
+        assert "advertises" in reason
+
+    def test_rejects_foreign_binary_of_the_same_name(self, tmp_path):
+        exe = _write_fake_attractor(tmp_path / "bin", ours=False)
+        ok, reason = validate_attractor_binary(exe)
+        assert ok is False
+        # names the missing flags and says why
+        assert "--param" in reason
+        assert "different tool" in reason
+
+    def test_rejects_nonzero_exit(self, tmp_path):
+        exe = _write_fake_attractor(tmp_path / "bin", ours=True, exit_code=3)
+        ok, reason = validate_attractor_binary(exe)
+        assert ok is False
+        assert "exited 3" in reason
+
+    def test_rejects_unexecutable_path(self, tmp_path):
+        ok, reason = validate_attractor_binary(tmp_path / "does-not-exist")
+        assert ok is False
+        assert "could not execute" in reason
+
+
+class TestAttractorResolutionOrder:
+    def test_interpreter_sibling_preferred_over_path(self, tmp_path, monkeypatch):
+        """THE REGRESSION: PATH order must not decide which engine we run."""
+        sibling_bin = tmp_path / "venv-bin"
+        path_bin = tmp_path / "path-bin"
+        sibling_exe = _write_fake_attractor(sibling_bin, ours=True)
+        _write_fake_attractor(path_bin, ours=True)  # also valid, but on PATH
+        _point_interpreter_at(monkeypatch, sibling_bin)
+        monkeypatch.setenv("PATH", str(path_bin))
+
+        resolution = resolve_attractor_resolution(None)
+
+        assert resolution.command == [str(sibling_exe)]
+        assert resolution.source == "interpreter-sibling"
+
+    def test_foreign_binary_first_on_path_is_skipped_for_sibling(
+        self, tmp_path, monkeypatch
+    ):
+        """The exact live incident: foreign `attractor` first on PATH."""
+        sibling_bin = tmp_path / "venv-bin"
+        foreign_bin = tmp_path / "usr-local-bin"
+        sibling_exe = _write_fake_attractor(sibling_bin, ours=True)
+        _write_fake_attractor(foreign_bin, ours=False)
+        _point_interpreter_at(monkeypatch, sibling_bin)
+        monkeypatch.setenv("PATH", str(foreign_bin))
+
+        assert resolve_attractor_command(None) == [str(sibling_exe)]
+
+    def test_foreign_on_path_rejected_and_next_path_candidate_used(
+        self, tmp_path, monkeypatch
+    ):
+        """No valid sibling: walk PATH in order, rejecting foreign binaries."""
+        empty_sibling = tmp_path / "no-engine-here"
+        empty_sibling.mkdir()
+        foreign_bin = tmp_path / "foreign-bin"
+        real_bin = tmp_path / "real-bin"
+        _write_fake_attractor(foreign_bin, ours=False)
+        real_exe = _write_fake_attractor(real_bin, ours=True)
+        _point_interpreter_at(monkeypatch, empty_sibling)
+        monkeypatch.setenv("PATH", f"{foreign_bin}{os.pathsep}{real_bin}")
+
+        resolution = resolve_attractor_resolution(None)
+
+        assert resolution.command == [str(real_exe)]
+        assert resolution.source == "PATH"
+        assert len(resolution.rejected) == 1
+        rejected_path, reason = resolution.rejected[0]
+        assert rejected_path == str(foreign_bin / "attractor")
+        assert "--param" in reason
+
+    def test_all_candidates_foreign_fails_loud(self, tmp_path, monkeypatch):
+        empty_sibling = tmp_path / "no-engine-here"
+        empty_sibling.mkdir()
+        foreign_bin = tmp_path / "foreign-bin"
+        _write_fake_attractor(foreign_bin, ours=False)
+        _point_interpreter_at(monkeypatch, empty_sibling)
+        monkeypatch.setenv("PATH", str(foreign_bin))
+
+        with pytest.raises(RuntimeError) as excinfo:
+            resolve_attractor_command(None)
+
+        msg = str(excinfo.value)
+        assert "no usable attractor engine found" in msg
+        assert str(foreign_bin / "attractor") in msg  # what was found
+        assert "--param" in msg  # why it was rejected
+        assert "amplifier-module-pipeline-runner" in msg  # the remedy
+        assert "foreign binary is rejected" in msg  # the likely cause
+
+    def test_no_candidates_at_all_fails_loud(self, tmp_path, monkeypatch):
+        empty_sibling = tmp_path / "no-engine-here"
+        empty_sibling.mkdir()
+        _point_interpreter_at(monkeypatch, empty_sibling)
+        monkeypatch.setenv("PATH", str(tmp_path / "empty-path-dir"))
+
+        with pytest.raises(RuntimeError) as excinfo:
+            resolve_attractor_command(None)
+
+        msg = str(excinfo.value)
+        assert "not found next to the current Python interpreter" in msg
+        assert "amplifier-module-pipeline-runner" in msg
+
+    def test_resolution_is_cached_per_process(self, tmp_path, monkeypatch):
+        sibling_bin = tmp_path / "venv-bin"
+        _write_fake_attractor(sibling_bin, ours=True)
+        _point_interpreter_at(monkeypatch, sibling_bin)
+        monkeypatch.setenv("PATH", "")
+
+        probes: list[str] = []
+        real_validate = validate_attractor_binary
+
+        def counting_validate(binary):
+            probes.append(str(binary))
+            return real_validate(binary)
+
+        monkeypatch.setattr(
+            "amplifier_simulated_user_research.runner.validate_attractor_binary",
+            counting_validate,
+        )
+
+        first = resolve_attractor_command(None)
+        second = resolve_attractor_command(None)
+
+        assert first == second
+        assert len(probes) == 1  # second call served from cache
+
+
+class TestAttractorCheckoutOverride:
+    def test_checkout_takes_precedence_over_everything(self, tmp_path, monkeypatch):
+        """Explicit operator override wins -- and needs no identity probe."""
+        sibling_bin = tmp_path / "venv-bin"
+        _write_fake_attractor(sibling_bin, ours=True)
+        _point_interpreter_at(monkeypatch, sibling_bin)
+        checkout = tmp_path / "attractor-checkout"
+        (checkout / "modules" / "pipeline-runner").mkdir(parents=True)
+
+        def exploding_validate(binary):  # must never be called
+            raise AssertionError("explicit checkout must not be identity-probed")
+
+        monkeypatch.setattr(
+            "amplifier_simulated_user_research.runner.validate_attractor_binary",
+            exploding_validate,
+        )
+
+        resolution = resolve_attractor_resolution(str(checkout))
+
+        assert resolution.source == "checkout"
+        assert resolution.command[:2] == ["uv", "run"]
+        assert resolution.command[-1] == "attractor"
+
     def test_missing_checkout_raises(self, tmp_path):
         with pytest.raises(
             RuntimeError, match="does not contain modules/pipeline-runner"
         ):
             resolve_attractor_command(str(tmp_path / "nonexistent-checkout"))
-
-    def test_checkout_shells_via_uv_run(self, tmp_path):
-        checkout = tmp_path / "attractor-checkout"
-        (checkout / "modules" / "pipeline-runner").mkdir(parents=True)
-        cmd = resolve_attractor_command(str(checkout))
-        assert cmd[:2] == ["uv", "run"]
-        assert cmd[-1] == "attractor"
-
-    def test_raises_when_not_found_anywhere(self, monkeypatch):
-        monkeypatch.setattr(
-            "amplifier_simulated_user_research.runner.shutil.which", lambda name: None
-        )
-        monkeypatch.setattr(
-            "amplifier_simulated_user_research.runner.Path.is_file", lambda self: False
-        )
-        with pytest.raises(RuntimeError, match="attractor console script not found"):
-            resolve_attractor_command(None)
-
-    def test_finds_via_which(self, monkeypatch):
-        monkeypatch.setattr(
-            "amplifier_simulated_user_research.runner.shutil.which",
-            lambda name: "/usr/bin/attractor",
-        )
-        assert resolve_attractor_command(None) == ["/usr/bin/attractor"]
 
 
 class TestRunIdentity:

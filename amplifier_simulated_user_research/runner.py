@@ -30,7 +30,6 @@ import datetime as _dt
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -154,28 +153,166 @@ def _dot_path(config: RoundConfig) -> Path:
     return config.resolved_sur_repo_dir() / "pipelines" / "simulated-user-research.dot"
 
 
-def resolve_attractor_command(attractor_checkout: str | None = None) -> list[str]:
-    """Return the argv prefix that runs the `attractor` CLI.
+# --- Engine binary resolution -------------------------------------------
+#
+# `attractor` is a GENERIC binary name: other, unrelated packages ship a
+# command by that name too (a real incident -- a foreign `attractor` earlier
+# on PATH swallowed our invocation and died with an inscrutable argparse
+# "unrecognized arguments" error). Two consequences encoded below:
+#
+#   1. ORDER: the console script installed alongside US (a sibling of the
+#      running interpreter) is by construction the engine we depend on
+#      (amplifier-module-pipeline-runner). It is tried FIRST; PATH is only
+#      a fallback, and every PATH hit is considered in order, not just the
+#      first.
+#   2. IDENTITY: presence is not identity. Each candidate is probed with
+#      `<binary> run --help` and must advertise the flags this lib actually
+#      passes. A candidate that doesn't is rejected and the next is tried.
+#
+# Both checks are cheap (one --help per candidate, cached per process).
 
-    Primary path (default, `attractor_checkout=None`):
-    `amplifier-module-pipeline-runner` is a normal git-subdirectory
-    dependency of this package (verified installable -- see README "Engine
-    dependency"), so its `attractor` console script is installed into the
-    same environment as this package. We locate it via PATH first, then
-    fall back to the sibling of the current Python interpreter (the
-    standard location for console scripts installed into the active venv)
-    -- this is more robust than PATH alone in non-interactive subprocess
-    contexts.
+# The flags run_round() actually passes. A binary that doesn't advertise all
+# of them cannot be our engine, whatever it is called.
+_REQUIRED_ENGINE_FLAGS = ("--param", "--logs-root", "--on-human-gate")
 
-    Escape hatch: if `attractor_checkout` is given (local development
-    against an unmerged/local amplifier-bundle-attractor checkout), shell
-    out via `uv run --project <checkout>/modules/pipeline-runner attractor`
-    instead -- this keeps the dependency behind attractor's own CLI
-    boundary either way (never importing its internals).
+# Probe timeout: `attractor run --help` is argparse-fast; anything slower is
+# a broken/hanging binary we should reject rather than wait on.
+_ENGINE_PROBE_TIMEOUT_S = 20
+
+_ENGINE_REMEDY = (
+    "The engine is the `attractor` console script from "
+    "amplifier-module-pipeline-runner (installed as a dependency of this "
+    "package). Reinstall this tool (`uv tool install --force ...` / `uv "
+    "sync`) so the engine lands beside it, or set `attractor_checkout` in "
+    "project.yaml to a local amplifier-bundle-attractor checkout. NOTE: an "
+    "unrelated package may ship its own binary named `attractor` earlier on "
+    "PATH -- a foreign binary is rejected, not used."
+)
+
+
+@dataclass(frozen=True)
+class AttractorResolution:
+    """The resolved engine invocation plus why other candidates lost.
+
+    Attributes:
+        command: argv prefix that runs the engine (e.g. ``["/path/attractor"]``
+            or the ``uv run --project ... attractor`` form).
+        source: how it was resolved -- "checkout" (explicit override),
+            "interpreter-sibling", or "PATH".
+        rejected: ``(path, reason)`` for every candidate probed and refused,
+            in probe order. Surfaced by `doctor` so a shadowing binary is
+            visible before it can break a run.
+    """
+
+    command: list[str]
+    source: str
+    rejected: tuple[tuple[str, str], ...] = ()
+
+
+# Per-process cache keyed by the attractor_checkout override (or "" for none):
+# resolution costs a subprocess probe, and a single process may resolve many
+# times (run_round + doctor + tests).
+_RESOLUTION_CACHE: dict[str, AttractorResolution] = {}
+
+
+def reset_attractor_resolution_cache() -> None:
+    """Clear the per-process resolution cache (tests; PATH changes)."""
+    _RESOLUTION_CACHE.clear()
+
+
+def _candidate_binaries() -> list[Path]:
+    """Engine-binary candidates, best first, de-duplicated by real path.
+
+    Order: the running interpreter's sibling (our own environment) first,
+    then every `attractor` found on PATH in PATH order.
+    """
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+
+    def _add(path: Path) -> None:
+        try:
+            key = path.resolve()
+        except OSError:
+            key = path
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(path)
+
+    sibling = Path(sys.executable).parent / "attractor"
+    if sibling.is_file():
+        _add(sibling)
+
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        candidate = Path(entry) / "attractor"
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            _add(candidate)
+
+    return candidates
+
+
+def validate_attractor_binary(binary: str | Path) -> tuple[bool, str]:
+    """Probe a candidate: is this OUR engine?
+
+    Runs ``<binary> run --help`` and requires every flag in
+    ``_REQUIRED_ENGINE_FLAGS`` to appear in its help output. This is the
+    honest check -- it tests the exact interface `run_round()` depends on,
+    rather than trusting a filename.
+
+    Returns:
+        (ok, reason) -- `reason` explains the rejection when ok is False.
+    """
+    try:
+        proc = subprocess.run(
+            [str(binary), "run", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=_ENGINE_PROBE_TIMEOUT_S,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"`run --help` timed out after {_ENGINE_PROBE_TIMEOUT_S}s"
+    except OSError as e:
+        return False, f"could not execute: {e}"
+
+    help_text = f"{proc.stdout}\n{proc.stderr}"
+    missing = [flag for flag in _REQUIRED_ENGINE_FLAGS if flag not in help_text]
+    if proc.returncode != 0:
+        return False, f"`run --help` exited {proc.returncode} (not our engine CLI)"
+    if missing:
+        return False, (
+            f"`run --help` does not advertise {', '.join(missing)} -- this is a "
+            f"different tool that happens to be named `attractor`"
+        )
+    return True, "advertises the engine's run flags"
+
+
+def resolve_attractor_resolution(
+    attractor_checkout: str | None = None,
+) -> AttractorResolution:
+    """Resolve the engine invocation, validating identity. Cached per process.
+
+    Priority:
+      1. `attractor_checkout` (explicit operator override) -- shells
+         ``uv run --project <checkout>/modules/pipeline-runner attractor``.
+         Trusted without a probe: it is explicit, and its directory shape is
+         verified. (A `uv run` probe would also pay a full resolve.)
+      2. The running interpreter's sibling `attractor` -- by construction the
+         engine installed alongside this package.
+      3. Each `attractor` on PATH, in PATH order.
+    Candidates 2 and 3 must pass `validate_attractor_binary`.
 
     Raises:
-        RuntimeError: if no `attractor` command can be located.
+        RuntimeError: if no candidate validates -- naming every candidate
+            found, why each was rejected, and the remedy.
     """
+    cache_key = attractor_checkout or ""
+    cached = _RESOLUTION_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     if attractor_checkout:
         runner_dir = (
             Path(attractor_checkout).expanduser() / "modules" / "pipeline-runner"
@@ -185,23 +322,53 @@ def resolve_attractor_command(attractor_checkout: str | None = None) -> list[str
                 f"attractor_checkout={attractor_checkout!r} does not contain "
                 f"modules/pipeline-runner (looked for {runner_dir})"
             )
-        return ["uv", "run", "--project", str(runner_dir), "attractor"]
+        resolution = AttractorResolution(
+            command=["uv", "run", "--project", str(runner_dir), "attractor"],
+            source="checkout",
+        )
+        _RESOLUTION_CACHE[cache_key] = resolution
+        return resolution
 
-    exe = shutil.which("attractor")
-    if exe:
-        return [exe]
+    rejected: list[tuple[str, str]] = []
+    sibling_dir = Path(sys.executable).parent
+    for candidate in _candidate_binaries():
+        ok, reason = validate_attractor_binary(candidate)
+        if ok:
+            source = (
+                "interpreter-sibling" if candidate.parent == sibling_dir else "PATH"
+            )
+            resolution = AttractorResolution(
+                command=[str(candidate)],
+                source=source,
+                rejected=tuple(rejected),
+            )
+            _RESOLUTION_CACHE[cache_key] = resolution
+            return resolution
+        rejected.append((str(candidate), reason))
 
-    candidate = Path(sys.executable).parent / "attractor"
-    if candidate.is_file():
-        return [str(candidate)]
-
+    if rejected:
+        found = "; ".join(f"{path} -- {reason}" for path, reason in rejected)
+        raise RuntimeError(
+            f"no usable attractor engine found. Candidates probed and rejected: "
+            f"{found}. {_ENGINE_REMEDY}"
+        )
     raise RuntimeError(
-        "attractor console script not found on PATH or next to the current Python "
-        "interpreter. amplifier-module-pipeline-runner should have installed it as "
-        "part of this package's own dependencies -- reinstall (`uv sync` / `pip "
-        "install -e .`), or set RoundConfig.attractor_checkout to point at a local "
-        "amplifier-bundle-attractor checkout."
+        f"attractor console script not found next to the current Python "
+        f"interpreter ({sibling_dir}) or anywhere on PATH. {_ENGINE_REMEDY}"
     )
+
+
+def resolve_attractor_command(attractor_checkout: str | None = None) -> list[str]:
+    """Return the argv prefix that runs the engine's `attractor` CLI.
+
+    Thin accessor over `resolve_attractor_resolution` (which owns ordering,
+    identity validation, and caching -- see that function and the module's
+    "Engine binary resolution" comment block).
+
+    Raises:
+        RuntimeError: if no candidate validates as our engine.
+    """
+    return resolve_attractor_resolution(attractor_checkout).command
 
 
 def _build_command(
@@ -441,7 +608,9 @@ def run_round(
         # argparse usage error from the engine CLI: the invocation never ran
         # a round (choice rejected before any pipeline work), so no ledger
         # record is written. Fail loud with the exact situation + fixes.
-        raise RuntimeError(_CONSOLE_GATE_REJECTED_MSG)
+        # The resolved binary is named so a shadowed/foreign `attractor` is
+        # diagnosable in one look (see "Engine binary resolution" above).
+        raise RuntimeError(f"{_CONSOLE_GATE_REJECTED_MSG} (engine: {command[0]})")
 
     attractor_status = _parse_attractor_status(stdout_text)
     artifacts = _collect_artifacts(output_dir, config)

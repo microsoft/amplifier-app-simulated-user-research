@@ -54,6 +54,17 @@ changes need a full live round (see the verification gradient in the PR template
    registered bundle name and won't resolve.
 7. **`--on-human-gate console`** needs engine ≥ attractor PR #95 (on `@main`);
    `stop` is the default unattended ending and is SUCCESS, not failure.
+8. **`attractor` is a generic binary name — presence ≠ identity.** An unrelated
+   package shipped its own `attractor` earlier on PATH; `shutil.which()`-first
+   resolution shelled out to it and the run died with an inscrutable argparse
+   `unrecognized arguments` error, while `doctor` had reported **[OK]** because
+   it only checked existence. Resolution is now **interpreter-sibling first**
+   (the engine installed alongside us), PATH only as fallback, and every
+   candidate is **identity-probed** (`<binary> run --help` must advertise
+   `--param`, `--logs-root`, `--on-human-gate`) before use — rejects are named
+   in the loud failure. Generalize the lesson: any preflight check must
+   validate *capability*, not presence (same class as the browser-launchability
+   check). If you add a dependency on an external binary, probe what it can do.
 
 ## Workflow
 
