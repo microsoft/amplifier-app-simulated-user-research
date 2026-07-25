@@ -44,13 +44,25 @@ worked example; `amplifier-simulated-user-research init` scaffolds a starter):
 | `target_url` | Base URL of the running scratch instance to audit |
 | `api_key` / `api_key_env` | The TARGET APP's login credential (literal, or env var name) — exactly one |
 | `seed_command` | Shell command that seeds the scratch instance (safely re-runnable) |
-| `seed_cwd` | Directory the seed command runs from |
+| `seed_cwd` | Directory the seed AND reset commands run from |
+| `reset_command` | OPTIONAL. Shell command that resets your app's state, run BEFORE `seed_command` |
 | `personas_dir` | Folder of `<name>.md` persona briefs |
 | `personas` | Exactly 3 names, each matching a brief file |
 | `output_dir` | Where all round artifacts land |
 | `app_source_hint` | Path(s) the design reviewers read (your app's source) |
 | `browser_bundle` | Bundle name for browser sessions (default `simulated-user-research-browser-node`) |
 | `provider` | LLM provider (`anthropic` default; needs `ANTHROPIC_API_KEY`) |
+
+**`reset_command` — start every round from a representative state.** A round
+that reuses a long-lived test fixture without resetting it silently corrupts its
+own findings: two consecutive real rounds reported "triage is broken" when the
+truth was a test queue a human had worked through days earlier. If your app has
+a reset script, name it here and the pipeline runs it before seeding — once per
+round (guarded by a `.reset-complete` marker, so resuming a crashed round never
+re-resets the database out from under artifacts already collected), from
+`seed_cwd`, hard-stopping loudly if it fails. Most projects have no reset step:
+omit the key entirely and the stage safely no-ops. There is deliberately no
+separate `reset_cwd` — the engine takes one working directory per run.
 
 Optional: `sur_repo_dir` (auto-detected from the installed package),
 `logs_root`, `browser_executable_path` / `browser_args` (custom browser — see

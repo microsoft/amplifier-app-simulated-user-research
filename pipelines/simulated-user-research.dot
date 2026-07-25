@@ -3,10 +3,14 @@
 // Simulated User Research pipeline — attractor DOT graph.
 //
 // Encodes the proven manual process end-to-end:
-//   1. SEED            (tool)      resumable scratch-instance seeding
+//   0. RESET            (tool)      OPTIONAL project-supplied reset command,
+//                                  runs before seed (see STAGE 0 below)
+//   1. SEED             (tool)      resumable scratch-instance seeding
 //   2. VISUAL CAPTURE   (tool)      single-shot subprocess, browser walkthrough,
 //                                  2 viewports, notes (see MECHANISM CHANGE below)
-//   3. DESIGN REVIEWS   (2x box)   IA review + responsive review, PARALLEL
+//   3. DESIGN REVIEWS   (2x tool)  IA review + responsive review, PARALLEL,
+//                                  single-shot subprocess + browser (see
+//                                  MECHANISM CHANGE, 4th hardening cycle)
 //   4. PERSONA SESSIONS (Nx tool)  sequential (single browser daemon), true
 //                                  first-run onboarding + tasks per persona
 //                                  (single-shot subprocess, see below)
@@ -56,20 +60,45 @@
 //   HARDENING SPRINT header note above), never the retry/hard-stop
 //   mechanics themselves.
 //
-// * REVIEW + SYNTHESIS BOXES ARE DELIBERATELY UNCHANGED: review_ia,
-//   review_responsive, and synthesis remain shape=box (real spawned
-//   loop-agent child sessions via the pipeline engine's own session.spawn
-//   path). They don't drive a browser or role-play a persona — they read
-//   static artifacts and write a structured document — so they never
-//   exhibited the narration-without-a-tool-call death shape in this
-//   pipeline's incident history, and converting them would lose the
-//   review/synthesis prompt-level nuance (goal_gate, reasoning_effort
-//   overrides, Missing-inputs handling) for no benefit. If a review or
-//   synthesis node is EVER observed dying the same way (text-only final
-//   reply, no report_outcome, mid-sentence), apply the identical
-//   tool-node conversion to it — the wrapper script and overlay bundle
-//   already generalize (run_browser_node.py's --role could grow a
-//   "static-review" mode; not built until there's a proven need for it).
+// * MECHANISM CHANGE (4th hardening cycle) — REVIEW NODES CONVERTED TOO,
+//   SYNTHESIS DELIBERATELY STILL UNCHANGED: review_ia and review_responsive
+//   were ORIGINALLY left shape=box on the same justification synthesis
+//   still carries below ("never exhibited the narration-without-a-tool-call
+//   death shape in this pipeline's incident history"). That justification
+//   EXPIRED: in round 4, review_responsive hit the narrate-and-die shape
+//   THREE TIMES IN A ROW — status.json recorded outcome=success with
+//   notes="Plain text response: Now I have all the information I need to
+//   write the review. Let me compile the complete findings:" and NO
+//   review-responsive.md was ever written, burning all 3 retries and
+//   hard-stopping that branch (synthesis went on to correctly report it
+//   under "Missing inputs" — the epistemic-honesty layer worked exactly as
+//   designed, but the review itself was still lost for the round). See
+//   verify-shots/research-round-4/.attractor-logs/r-20260724-205315/review_responsive/status.json.
+//   Both review_ia and review_responsive are now shape=parallelogram (tool)
+//   nodes, following the IDENTICAL structural fix as capture/persona below
+//   — see their own node comments for the full mechanism-change writeup —
+//   and, per the hardening brief, now ALSO drive a real browser (both
+//   viewports) rather than only reading static capture-notes.md/screens, so
+//   they get the same browser-ran proof manifest + zero-navigation refusal
+//   as capture/persona, not a weakened variant of it.
+//
+//   synthesis remains shape=box (a real spawned loop-agent child session
+//   via the pipeline engine's own session.spawn path) — it does not drive
+//   a browser or role-play a persona, it reads static artifacts and writes
+//   a structured document, and unlike review_responsive it has ZERO
+//   narrate-and-die incidents in this pipeline's history. Its one
+//   structurally-possible variant of the failure mode (a revision pass
+//   that narrates instead of rewriting research-spec.md) is caught
+//   separately by check_revision_progress's hash-staleness check (see
+//   REVISION STALENESS below and that node's own comment) — converting it
+//   would lose goal_gate/reasoning_effort/Missing-inputs prompt-level
+//   nuance for no benefit today. If synthesis is EVER observed dying the
+//   same way (text-only final reply, no report_outcome, mid-sentence) —
+//   not just a stale-but-still-written revision — that is new evidence and
+//   this decision should be revisited the same way the review nodes' was;
+//   the wrapper script and overlay bundle already generalize for it (see
+//   run_browser_node.py's module docstring, "--role synthesis WAS
+//   CONSIDERED AND DELIBERATELY NOT BUILT").
 //
 // * SEQUENTIAL PERSONAS (single browser daemon): the engine's concurrency
 //   model is single-threaded at the top level — only ONE node executes at
@@ -168,14 +197,15 @@
 //   a hard-stop. See run_browser_node.py's module docstring, item 1.
 //
 // * RUN ID: every artifact this pipeline produces stamps "Run ID: $run_id"
-//   in its header -- mechanically for the four tool-node browser stages
-//   (run_browser_node.py's `_stamp_header` prepends it before writing, never
-//   left to model compliance) and via explicit prompt instruction (the
-//   literal value substitutes into the prompt before the model ever sees
-//   it, so the model is asked to reproduce a value it was handed, not
-//   asked to invent one) for the box nodes (review_ia, review_responsive,
-//   synthesis). `run_id` is a REQUIRED graph param with no default --
-//   callers pass e.g. `--param run_id=r-20260723-140501`.
+//   in its header -- mechanically for the SIX run_browser_node.py
+//   tool-node stages (capture, persona1-3, review_ia, review_responsive --
+//   `_stamp_header` prepends it before writing, never left to model
+//   compliance) and via explicit prompt instruction (the literal value
+//   substitutes into the prompt before the model ever sees it, so the
+//   model is asked to reproduce a value it was handed, not asked to
+//   invent one) for the one remaining box node (synthesis). `run_id` is a
+//   REQUIRED graph param with no default -- callers pass e.g.
+//   `--param run_id=r-20260723-140501`.
 //
 // * REVISION STALENESS: gate_feedback's revision path now snapshots
 //   research-spec.md's hash BEFORE re-running synthesis (snapshot_spec_hash)
@@ -204,8 +234,19 @@ digraph SimulatedUserResearch {
         model_stylesheet="
             * { llm_model: claude-sonnet-4-6; llm_provider: anthropic; reasoning_effort: medium; }
             .synthesis { reasoning_effort: high; }
-            .review { reasoning_effort: high; }
         "
+        // NOTE (4th hardening cycle): a ".review { reasoning_effort: high; }"
+        // rule used to live here, back when review_ia/review_responsive were
+        // shape=box (LLM) nodes reading this graph-level model_stylesheet.
+        // Both are now shape=parallelogram (tool) nodes that shell out to
+        // scripts/run_browser_node.py's own single-shot session (fixed model
+        // config lives in bundles/browser-node-agent.yaml, not here) -- a
+        // ToolHandler node never consults llm_model/llm_provider/
+        // reasoning_effort, so that rule became dead weight (harmless --
+        // apply_stylesheet would still set the attr on the node, but nothing
+        // reads it) and was removed rather than left to confuse a future
+        // reader into thinking it still does something. See the "REVIEW +
+        // SYNTHESIS" header note below for the full mechanism-change writeup.
         // NOTE: no graph-level retry_target/fallback_retry_target — see
         // header comment. Node-level retry_target is used instead where needed.
     ]
@@ -217,10 +258,12 @@ digraph SimulatedUserResearch {
     //                       with the parallel lib/CLI build is that the
     //                       lib always passes --param run_id=r-YYYYMMDD-HHMMSS).
     //                       Stamped as "Run ID: $run_id" in every artifact
-    //                       header (mechanically for the four browser
-    //                       tool-nodes via run_browser_node.py's
-    //                       _stamp_header; via prompt substitution for the
-    //                       box nodes) and validated by
+    //                       header (mechanically for the SIX
+    //                       run_browser_node.py tool-nodes -- capture,
+    //                       persona1-3, review_ia, review_responsive -- via
+    //                       run_browser_node.py's _stamp_header; via
+    //                       prompt substitution for the one remaining box
+    //                       node, synthesis) and validated by
     //                       scripts/validate_artifact.py on every
     //                       check_*/verify_* gate. verify_* gates pass
     //                       --require-exact: an artifact whose Run ID
@@ -240,7 +283,10 @@ digraph SimulatedUserResearch {
     //   personas_dir     -- absolute path to the folder of <name>.md briefs
     //   output_dir       -- absolute path for all artifacts this round
     //   app_source_hint  -- comma-separated file/dir path(s) the design
-    //                       reviewers should read (the app's source)
+    //                       reviewers should read/cross-reference (the
+    //                       app's source). Consumed by BOTH review tool
+    //                       nodes (review_ia, review_responsive) via
+    //                       run_browser_node.py's --app-source-hint flag.
     //   persona1/2/3     -- bare persona names (no .md); each must have a
     //                       matching $personas_dir/<name>.md brief file.
     //                       To change the roster size, copy a persona
@@ -252,8 +298,10 @@ digraph SimulatedUserResearch {
     //                       research REPO ROOT (the directory containing
     //                       scripts/ and bundles/) -- NOT the
     //                       pipelines/ subdirectory this .dot file itself
-    //                       lives in. Needed so the four tool-node browser
-    //                       stages can find scripts/run_browser_node.py. Not
+    //                       lives in. Needed so the six run_browser_node.py
+    //                       tool-node stages (capture, persona1-3,
+    //                       review_ia, review_responsive) can find
+    //                       scripts/run_browser_node.py. Not
     //                       auto-derived -- the engine has no "my own source
     //                       directory" var reliably available inside a
     //                       tool_command string (graph.source_dir is a
@@ -275,10 +323,128 @@ digraph SimulatedUserResearch {
     //                       pass the file://... path directly — both work,
     //                       proven live; the registered name is more
     //                       portable/readable in run invocations).
+    //
+    // Optional params (omit entirely for a project that doesn't need one):
+    //   reset_command    -- OPTIONAL full shell command that resets the
+    //                       target app's own state BEFORE seed_command
+    //                       runs (4th hardening cycle -- generalizes
+    //                       attention-firewall/server/scripts/reset_research.py;
+    //                       see STAGE 0 below for the full contract and
+    //                       rationale). Mirrors seed_command's own
+    //                       param/plumbing shape exactly. When NOT passed
+    //                       (the common case -- most projects have no
+    //                       reset step), reset_state safely no-ops: see
+    //                       reset_state's tool_command and the STAGE 0
+    //                       header comment's "UNSET/EMPTY BEHAVIOR CANNOT
+    //                       FAIL THE NODE" note for the exact mechanism
+    //                       (do NOT reach for bash `${var:-default}`
+    //                       shell-default syntax here -- it does not work
+    //                       against this engine's substitution, see that
+    //                       same note for why).
     // ------------------------------------------------------------------
 
     start [shape=Mdiamond, label="Start"]
     exit  [shape=Msquare,  label="Exit"]
+
+    // ==================================================================
+    // STAGE 0 — RESET (OPTIONAL, deterministic, resumable; 4th hardening
+    // cycle)
+    // ==================================================================
+    // Generalizes the lesson from attention-firewall/server/scripts/
+    // reset_research.py: an un-reset research database silently corrupted
+    // TWO CONSECUTIVE rounds (every push item had been dismissed days
+    // earlier; rounds 3 and 4 both produced false "triage is broken"
+    // findings from stale prior-session state, not a real bug). seed_command
+    // alone cannot fix this class of problem -- seeding ADDS fixture data,
+    // it does not UNDO the decision-derived state prior rounds left behind
+    // (dismissed items, verdicts, transcripts). A project needs a separate,
+    // project-specific way to wind its own state back to a representative
+    // starting point BEFORE seeding runs.
+    //
+    // CONTRACT (this is the exact contract the lib/CLI side (RoundConfig)
+    // must honor -- see amplifier_simulated_user_research/config.py):
+    //   - param name: reset_command (exactly mirrors seed_command's own
+    //     param name/plumbing -- same graph param mechanism, same
+    //     to_dot_params() dict, same resolver.yaml `input: shortText` shape).
+    //   - OPTIONAL: most projects have no reset step and MUST NOT be
+    //     forced to supply one. RoundConfig.reset_command should default
+    //     to None/"" and be OMITTED from to_dot_params() entirely when
+    //     unset -- exactly how seed_command is currently ALWAYS included,
+    //     but reset_command is included only when the project's YAML
+    //     sets it.
+    //   - UNSET/EMPTY BEHAVIOR CANNOT FAIL THE NODE: reset_state below
+    //     never uses bash's `${var:-default}` shell-default syntax --
+    //     THAT SYNTAX DOES NOT WORK HERE. The engine's substitute_context
+    //     (substitution.py) does brace-content-as-literal-key lookup: a
+    //     token written as `${reset_command:-true}` is looked up as the
+    //     KEY "reset_command:-true" (colon-dash-and-all), which is never
+    //     a real context key, so it is left COMPLETELY UNSUBSTITUTED and
+    //     bash then sees the literal four characters `${reset_command:-true}`
+    //     as a REAL, UNSET bash parameter reference -- which bash expands
+    //     to empty ONLY under non-strict mode, but still leaves a
+    //     confusing, easy-to-get-wrong dependency on bash's OWN parameter
+    //     defaulting rather than the engine's. Proven live against the
+    //     real substitute_context() before this landed -- do not
+    //     reintroduce `:-` shell-default syntax into a tool_command
+    //     expecting the ENGINE to resolve it; the engine only does plain
+    //     key substitution (see substitution.py's own module docstring
+    //     for the correct, portable pattern: `${optional_var:-fallback}`
+    //     is a BASH-SIDE idiom for when bash itself receives the raw
+    //     token unexpanded, not something the engine's substitution
+    //     understands as a compound key). Instead, reset_state below
+    //     captures the substituted value into a shell variable FIRST
+    //     (`cmd="${reset_command}"`), then branches in bash on whether
+    //     THAT variable is non-empty (`[ -n "$cmd" ]`) before ever
+    //     `eval`-ing it -- this is safe whether reset_command was never
+    //     passed at all (token left literal, but assigned as inert text
+    //     into $cmd and never eval'd because the whole point is we branch
+    //     BEFORE eval, not on the raw substituted text) or passed as an
+    //     empty string. See the node's tool_command for the exact form.
+    //   - WHEN SET: runs the caller's command verbatim, ONCE PER ROUND,
+    //     BEFORE seed_command (never after -- a reset that ran after
+    //     seeding would erase the very fixture data seed_command just
+    //     wrote), and is itself resumable via the SAME
+    //     file-existence-guard pattern as seed (`.reset-complete`
+    //     marker) -- NOT unconditional on every invocation. This matters
+    //     for crash-resume: the standalone `attractor run` CLI restarts
+    //     every invocation at Start (see the header's RESUMABILITY
+    //     note), so if reset_state had no skip-guard, resuming a round
+    //     that already completed capture/personas would silently
+    //     re-reset the target app's database out from under
+    //     already-produced artifacts, corrupting the very consistency
+    //     this stage exists to protect. check_reset below is what makes
+    //     reset "once per round" rather than "once per invocation."
+    //   - FAILURE MODE: if reset_command IS set and exits nonzero, this
+    //     node's `&&` chain fails exactly like run_seed's does -- no
+    //     retry_target reachable from it, so the pipeline halts loudly
+    //     with the captured stderr tail. A broken reset must not silently
+    //     let the round run against a still-corrupted dataset (same
+    //     reasoning as run_seed's own comment below).
+    check_reset [
+        shape=parallelogram,
+        label="Reset done?",
+        tool_command="test -f \"${output_dir}/.reset-complete\" && printf done || printf todo"
+    ]
+
+    reset_state [
+        shape=parallelogram,
+        label="Run Reset Command (optional)",
+        tool_command="cmd=\"${reset_command}\"; if [ -n \"$cmd\" ]; then eval \"$cmd\" && mkdir -p \"${output_dir}\" && touch \"${output_dir}/.reset-complete\" && printf reset_ran || printf reset_failed; else mkdir -p \"${output_dir}\" && touch \"${output_dir}/.reset-complete\" && printf reset_skipped; fi"
+    ]
+
+    start -> check_reset
+    check_reset -> reset_state [label="todo", condition="context.tool.last_line=todo"]
+    check_reset -> check_seed  [label="skip", condition="context.tool.last_line=done"]
+
+    reset_state -> check_seed      [label="ran",     condition="context.tool.last_line=reset_ran"]
+    reset_state -> check_seed      [label="no-op",   condition="context.tool.last_line=reset_skipped"]
+    reset_state -> hard_stop_reset [label="failed",  condition="context.tool.last_line=reset_failed"]
+
+    hard_stop_reset [
+        shape=parallelogram,
+        label="HALT: reset_command failed",
+        tool_command="printf 'FATAL: the project-supplied reset_command exited non-zero. This round cannot proceed against a dataset that may still carry prior-session state -- the exact class of bug this reset step exists to prevent (see attention-firewall/server/scripts/reset_research.py and rounds 3/4 false triage-is-broken findings). Inspect this node status.json/output.txt log for the actual stderr. No .reset-complete marker was written, so a later re-run (after a human fixes the underlying cause) retries reset_command rather than silently skipping it.\\\\n' 1>&2; exit 1"
+    ]
 
     // ==================================================================
     // STAGE 1 — SEED (deterministic, resumable)
@@ -304,7 +470,6 @@ digraph SimulatedUserResearch {
         tool_command="${seed_command} && mkdir -p \"${output_dir}\" && touch \"${output_dir}/.seed-complete\" && printf seeded"
     ]
 
-    start -> check_seed
     check_seed -> run_seed     [label="todo", condition="context.tool.last_line=todo"]
     check_seed -> check_capture [label="skip", condition="context.tool.last_line=done"]
     run_seed -> check_capture
@@ -407,7 +572,10 @@ digraph SimulatedUserResearch {
     ]
 
     // ==================================================================
-    // STAGE 3 — DESIGN REVIEWS (2 LLM nodes, PARALLEL, no browser)
+    // STAGE 3 — DESIGN REVIEWS (2 tool nodes, PARALLEL, single-shot
+    // subprocess + browser -- see the "MECHANISM CHANGE (4th hardening
+    // cycle)" comment on review_ia/review_responsive below for why these
+    // are no longer LLM box nodes and no longer browser-free)
     // ==================================================================
     // shape=component fans out to ALL its outgoing edges concurrently.
     // Each branch is itself guarded (check_review_ia / check_review_responsive)
@@ -415,6 +583,26 @@ digraph SimulatedUserResearch {
     // OTHER review (if not yet done) still runs. Both branches converge at
     // the shared tripleoctagon fan-in node below (required — a component
     // node with no shared convergence node fails loud at validation/runtime).
+    //
+    // CONCURRENT-BROWSER CAVEAT (load-bearing, do not "simplify" away):
+    // unlike the persona chain (STAGE 4), these two branches run IN
+    // PARALLEL and BOTH now drive a real browser (agent-browser). Each
+    // runs as a fully separate `amplifier run` subprocess, but
+    // agent-browser's UNNAMED "default session" is a SINGLE SHARED DAEMON
+    // PER MACHINE, not one per subprocess -- two concurrent subprocesses
+    // both driving the default session would silently stomp on each
+    // other's tabs/viewport/navigation state. This is NOT solved by
+    // process isolation; it is solved by session isolation:
+    // run_browser_node.py's build_review_instruction pins EVERY
+    // agent-browser invocation in each review's prompt to
+    // `--session review-ia` / `--session review-responsive` respectively
+    // (agent-browser's own named-session feature gives each an isolated
+    // cookies/tabs/viewport context) and explicitly forbids `close --all`
+    // (which tears down every session on the machine, not just the
+    // caller's own). See build_review_instruction's "NAMED SESSION, NOT
+    // THE SHARED DEFAULT" docstring for the full mechanism and why this is
+    // the one respect in which the review prompts deliberately do NOT
+    // mirror capture/persona's `close --all` cleanup step.
 
     parallel_reviews [
         shape=component,
@@ -430,36 +618,40 @@ digraph SimulatedUserResearch {
         tool_command="python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" review \"${output_dir}/review-ia.md\" --run-id \"${run_id}\" >/dev/null 2>&1 && printf done || printf todo"
     ]
 
+    // ------------------------------------------------------------------
+    // MECHANISM CHANGE (4th hardening cycle -- see the graph header's
+    // "MECHANISM CHANGE" note and run_browser_node.py's module docstring,
+    // "--role review WAS ADDED", for full context): this was a shape=box
+    // node whose prompt begged the model never to end on a text-only
+    // reply -- the SAME ask that failed for capture/persona in the 3rd
+    // hardening cycle. The justification for leaving reviews as box nodes
+    // ("they never exhibited the narration-without-a-tool-call death
+    // shape") expired in round 4 when its sibling review_responsive hit
+    // that exact shape three times in a row (see review_responsive's
+    // comment block below for the incident evidence) -- review_ia is
+    // converted alongside it rather than left as the sole surviving box
+    // node exposed to an identical, already-proven failure mode.
+    //
+    // STRUCTURAL FIX: same as capture/persona -- now shape=parallelogram
+    // (tool node) shelling out to scripts/run_browser_node.py --role
+    // review --review-focus ia, a single-shot session whose raw final
+    // response text IS the deliverable, written to review-ia.md by the
+    // wrapper script itself. This review ALSO now drives the browser live
+    // (both viewports) rather than only reading static
+    // capture-notes.md/screens, so it gets the same browser-ran proof
+    // manifest + zero-navigation refusal as capture/persona -- not a
+    // weakened variant of it. verify_review_ia below remains the sole
+    // quality gate; this node's tool_command always exits 0 (`|| true`)
+    // so a subprocess-level failure routes through to verify_review_ia
+    // (which correctly sees a missing/undersized file and drives the
+    // retry/hard-stop path) rather than dead-ending on an unmatched FAIL
+    // edge.
     review_ia [
-        shape=box,
-        class="review",
-        label="IA & Layout Review",
-        fidelity="truncate",
-        max_agent_turns="15",
-        timeout="900",
-        prompt="You are conducting an INFORMATION ARCHITECTURE & LAYOUT review as part of a simulated-user-research round. You do NOT have or need browser access for this task — work entirely from static artifacts.
-
-IMPORTANT — how your session ends: replying with text and no tool call ENDS your session immediately. Never narrate an intention ('let me write the review now') as a text-only reply — call the tool in that same turn instead. Until review-ia.md is written and verified, every reply must contain a tool call.
-
-Inputs:
-- Screenshots directory: $output_dir/screens/  (read every image in it)
-- Application source: $app_source_hint  (read these file(s)/directories to understand the actual implementation, routing, and component structure — not just what the screenshots show)
-
-Task:
-Evaluate the information architecture and layout of the product: navigation structure, hierarchy/grouping of content, discoverability of key actions, labeling/wording clarity, visual hierarchy (what draws the eye first vs what should), and whether the screen-to-screen flow makes sense for a first-time user. Cross-reference what you see in the screenshots against the actual source to catch discrepancies between intended and shipped behavior.
-
-Output:
-Write your complete findings to $output_dir/review-ia.md, starting with the literal line `Run ID: $run_id` as the very first line of the file (this is how downstream stages and a human at the gate confirm which round produced this artifact -- copy the value verbatim, do not invent your own), then these exact sections:
-  ## Summary (2-3 sentences: overall IA health)
-  ## Navigation & Structure
-  ## Hierarchy & Discoverability
-  ## Labeling & Copy
-  ## Specific Issues Found (numbered; each with screen/file reference, description, severity P1/P2/P3)
-  ## Recommendations (prioritized, concrete)
-
-The review must be substantive and complete before you finish — a bare section skeleton with no real findings does not satisfy this task. Never write a placeholder like \"(in progress)\" or \"to be completed\" anywhere in the file -- an incomplete review is a failed review that will be rejected and retried, not a partial pass.
-
-Before reporting anything, verify your own work with a tool call: run `wc -c $output_dir/review-ia.md` and confirm it is at least 1500 bytes, AND confirm the first line reads exactly `Run ID: $run_id`. Only after seeing that confirmed should you report success (via report_outcome if available, else a brief final text summary)."
+        shape=parallelogram,
+        class="review browser",
+        label="IA & Layout Review (single-shot subprocess)",
+        timeout="1800",
+        tool_command="python3 \"${sur_repo_dir}/scripts/run_browser_node.py\" --role review --review-focus ia --bundle \"${browser_bundle}\" --target-url \"${target_url}\" --api-key \"${api_key}\" --output-dir \"${output_dir}\" --report-path \"${output_dir}/review-ia.md\" --app-source-hint \"${app_source_hint}\" --run-id \"${run_id}\" --timeout-s 1700 || true"
     ]
 
     // DEFECT 2 fix, review branch: same file-ground-truth verify pattern as
@@ -505,35 +697,42 @@ Before reporting anything, verify your own work with a tool call: run `wc -c $ou
         tool_command="python3 \"${sur_repo_dir}/scripts/validate_artifact.py\" review \"${output_dir}/review-responsive.md\" --run-id \"${run_id}\" >/dev/null 2>&1 && printf done || printf todo"
     ]
 
+    // ------------------------------------------------------------------
+    // MECHANISM CHANGE (4th hardening cycle -- see the graph header's
+    // "MECHANISM CHANGE" note and run_browser_node.py's module docstring,
+    // "--role review WAS ADDED", for full context): this was a shape=box
+    // node whose prompt begged the model never to end on a text-only
+    // reply -- the SAME ask that failed for capture/persona in the 3rd
+    // hardening cycle. The justification for leaving reviews as box nodes
+    // ("they never exhibited the narration-without-a-tool-call death
+    // shape") expired in round 4: review_responsive hit EXACTLY that
+    // shape three times in a row (status.json: outcome=success,
+    // notes="Plain text response: Now I have all the information I need
+    // to write the review. Let me compile the complete findings:", no
+    // review-responsive.md ever written), burning all 3 retries and
+    // hard-stopping this branch. See
+    // verify-shots/research-round-4/.attractor-logs/r-20260724-205315/review_responsive/status.json.
+    //
+    // STRUCTURAL FIX: same as capture/persona -- now shape=parallelogram
+    // (tool node) shelling out to scripts/run_browser_node.py --role
+    // review --review-focus responsive, a single-shot session whose raw
+    // final response text IS the deliverable, written to
+    // review-responsive.md by the wrapper script itself. This review ALSO
+    // now drives the browser live (both viewports) rather than only
+    // reading static capture-notes.md/screens, so it gets the same
+    // browser-ran proof manifest + zero-navigation refusal as
+    // capture/persona -- not a weakened variant of it. verify_review_responsive
+    // below remains the sole quality gate; this node's tool_command always
+    // exits 0 (`|| true`) so a subprocess-level failure routes through to
+    // verify_review_responsive (which correctly sees a missing/undersized
+    // file and drives the retry/hard-stop path) rather than dead-ending on
+    // an unmatched FAIL edge.
     review_responsive [
-        shape=box,
-        class="review",
-        label="Responsive & Adaptive Review",
-        fidelity="truncate",
-        max_agent_turns="15",
-        timeout="900",
-        prompt="You are conducting a RESPONSIVE & ADAPTIVE DESIGN review as part of a simulated-user-research round. You do NOT have or need browser access for this task — work entirely from static artifacts.
-
-IMPORTANT — how your session ends: replying with text and no tool call ENDS your session immediately. Never narrate an intention ('let me write the review now') as a text-only reply — call the tool in that same turn instead. Until review-responsive.md is written and verified, every reply must contain a tool call.
-
-Inputs:
-- Screenshots directory: $output_dir/screens/  (compare the mobile vs desktop screenshot pairs for each screen — filenames are suffixed -mobile / -desktop)
-- Application source: $app_source_hint  (read the CSS/layout code to verify breakpoints, hit-area sizing, and responsive behavior match what the screenshots show)
-
-Task:
-Evaluate how well the product adapts across the two captured viewport widths (mobile ~390px, desktop ~1280px): breakpoint correctness, touch target/hit-area sizing on mobile, text reflow and truncation, layout shifts or broken grids, whether desktop uses the extra space well (vs just a stretched mobile layout), and any input-related issues (e.g. font-size under 16px causing mobile zoom, hover-only affordances with no touch equivalent).
-
-Output:
-Write your complete findings to $output_dir/review-responsive.md, starting with the literal line `Run ID: $run_id` as the very first line of the file (this is how downstream stages and a human at the gate confirm which round produced this artifact -- copy the value verbatim, do not invent your own), then these exact sections:
-  ## Summary (2-3 sentences: overall responsive health)
-  ## Breakpoint Behavior
-  ## Touch/Input Concerns
-  ## Layout Issues by Screen (numbered; each with screen/file reference, mobile vs desktop comparison, severity P1/P2/P3)
-  ## Recommendations (prioritized, concrete)
-
-The review must be substantive and complete before you finish — a bare section skeleton with no real findings does not satisfy this task. Never write a placeholder like \"(in progress)\" or \"to be completed\" anywhere in the file -- an incomplete review is a failed review that will be rejected and retried, not a partial pass.
-
-Before reporting anything, verify your own work with a tool call: run `wc -c $output_dir/review-responsive.md` and confirm it is at least 1500 bytes, AND confirm the first line reads exactly `Run ID: $run_id`. Only after seeing that confirmed should you report success (via report_outcome if available, else a brief final text summary)."
+        shape=parallelogram,
+        class="review browser",
+        label="Responsive & Adaptive Review (single-shot subprocess)",
+        timeout="1800",
+        tool_command="python3 \"${sur_repo_dir}/scripts/run_browser_node.py\" --role review --review-focus responsive --bundle \"${browser_bundle}\" --target-url \"${target_url}\" --api-key \"${api_key}\" --output-dir \"${output_dir}\" --report-path \"${output_dir}/review-responsive.md\" --app-source-hint \"${app_source_hint}\" --run-id \"${run_id}\" --timeout-s 1700 || true"
     ]
 
     // Same file-ground-truth verify pattern as verify_review_ia above.
@@ -884,6 +1083,28 @@ Before reporting anything, verify your own work with tool calls: run `wc -c $out
     // against. The snapshot file is consumed (deleted) on every run
     // through this node, revision or not, so a later independent
     // revision starts with a clean slate.
+    //
+    // 4th HARDENING CYCLE RE-AFFIRMATION: review_ia/review_responsive
+    // were converted to single-shot tool nodes this cycle after
+    // review_responsive hit the narrate-and-die shape 3x in round 4 (see
+    // this graph's header comment and their own node comments below).
+    // synthesis was re-evaluated against the SAME evidence and
+    // deliberately left as-is: it has zero narrate-and-die incidents in
+    // this pipeline's history (unlike review_responsive, which now has
+    // one), and its ONE structurally-possible variant of the failure
+    // mode -- a revision pass that narrates instead of rewriting
+    // research-spec.md -- is exactly what THIS node (check_revision_progress)
+    // catches via the hash-staleness check, not left to hope. Converting
+    // synthesis would forfeit goal_gate/retry_target (spec 3.4),
+    // reasoning_effort=high, and the engine's automatic human.gate.text
+    // injection (backend.py step 5) for a benefit synthesis does not
+    // currently need. If synthesis is EVER observed dying the loop-agent
+    // text-only-reply shape directly (not just via a stale-but-still-written
+    // revision), that observation is new evidence and this decision should
+    // be revisited the same way the review nodes' was -- see
+    // run_browser_node.py's module docstring, "--role synthesis WAS
+    // CONSIDERED AND DELIBERATELY NOT BUILT", for the mechanics that would
+    // need reproducing.
     // ------------------------------------------------------------------
     check_revision_progress [
         shape=parallelogram,

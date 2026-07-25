@@ -16,15 +16,18 @@ tool call, and a system-prompt reminder not to do this decays over
 attempts (proven: 3/3 identical deaths in this pipeline's own history).
 
 STRUCTURAL FIX: stop asking the model to write the deliverable to disk as
-its LAST action. Instead, run the persona/capture task as a single-shot
-`amplifier run --mode single --output-format json-trace` call and treat
-the session's raw final response TEXT as the deliverable -- captured
-here, programmatically, regardless of whether the model's last turn was
-a tool call or plain prose. A text-only final reply is no longer a
-failure mode; it's the intended, expected way this now finishes. This
+its LAST action. Instead, run the persona/capture/review task as a
+single-shot `amplifier run --mode single --output-format json-trace` call
+and treat the session's raw final response TEXT as the deliverable --
+captured here, programmatically, regardless of whether the model's last
+turn was a tool call or plain prose. A text-only final reply is no longer
+a failure mode; it's the intended, expected way this now finishes. This
 mirrors the pattern that worked in the project's manual (non-pipeline)
 research round: "the persona report returned as the response text, not
-agent-side file writes."
+agent-side file writes." (--role review was added a full hardening cycle
+later than capture/persona, once review_responsive was directly observed
+dying the identical way in production -- see "--role review WAS ADDED"
+below for that incident.)
 
 HARDENING SPRINT (3rd council round) additions -- read before editing:
 
@@ -147,6 +150,32 @@ text-only-reply death shape in practice (it has zero such incidents in
 this pipeline's history, per the .dot's own header comment), add a
 --role synthesis mode here following the same pattern as capture/persona
 below -- the wrapper and overlay bundle already generalize for it.
+
+
+--role review WAS ADDED (4th hardening cycle) once the justification for
+leaving review_ia/review_responsive as box nodes EXPIRED: round 4 hit the
+narrate-and-die shape on review_responsive THREE TIMES IN A ROW --
+status.json recorded outcome=success with
+notes="Plain text response: Now I have all the information I need to
+write the review. Let me compile the complete findings:" and no
+review-responsive.md was ever written, burning all 3 retries and
+hard-stopping that branch (synthesis went on to honestly report it under
+Missing inputs -- the epistemic-honesty layer worked exactly as designed,
+but the review itself was still lost for the round). This is the
+identical loop-agent death shape documented above for capture/persona: a
+final reply that narrates an intention ("let me write the review now")
+with no paired tool call ends the session, and no SessionConfig knob can
+reject it. The fix is the same structural one: --role review below drives
+the SAME single-shot subprocess pattern, and -- per the hardening brief --
+these reviews now also DRIVE THE BROWSER LIVE (both viewports, navigating
+the running app) rather than only reading static capture-notes.md/
+screens -- so they get the SAME browser-ran proof manifest + zero-
+navigation refusal as capture/persona, not a weakened variant of it.
+`--review-focus {ia,responsive}` selects which of the two review prompts
+(build_review_instruction) is used; the section-header contract each
+writes is unchanged from the retired box-node prompts, so
+validate_artifact.py's `review` type contract (>= 3 "## "-level headers)
+needed no changes.
 """
 
 from __future__ import annotations
@@ -183,8 +212,20 @@ def _last_line_exit(message: str, *, ok: bool) -> None:
 # ---------------------------------------------------------------------------
 
 _AB_TOKEN_RE = re.compile(r"agent-browser\b")
-_AB_OPEN_RE = re.compile(r"agent-browser(?:\s+--\S+)*\s+open\b")
-_AB_SCREENSHOT_RE = re.compile(r"agent-browser(?:\s+--\S+)*\s+screenshot\b")
+# Tolerate flags that take a value (e.g. `--session review-ia`), not just
+# bare/boolean flags: the old `(?:\s+--\S+)*` pattern matched only
+# `--flag` tokens with no following value, so `agent-browser --session
+# review-ia open ...` (added for the review role's per-branch session
+# isolation -- see build_review_instruction's "NAMED SESSION" note) would
+# NOT have matched `open` as the very next token and this browser-ran
+# proof counter would have silently undercounted every review-role
+# navigation/screenshot, hard-stopping every review after 3 retries. The
+# lookahead-guarded `(?:\s+(?!--)\S+)?` consumes AT MOST one non-flag
+# value token after a `--flag`, so `--session review-ia` is skipped as a
+# unit while a bare boolean flag like `--headless` still matches too.
+_AB_FLAG_RE = r"(?:--[\w-]+(?:\s+(?!--)\S+)?\s+)*"
+_AB_OPEN_RE = re.compile(r"agent-browser\s+" + _AB_FLAG_RE + r"open\b")
+_AB_SCREENSHOT_RE = re.compile(r"agent-browser\s+" + _AB_FLAG_RE + r"screenshot\b")
 
 
 def _count_browser_activity(execution_trace: list[dict]) -> dict[str, int]:
@@ -400,9 +441,150 @@ Your FINAL reply must be the complete friction log with these exact sections, in
 The report must be substantive and complete -- a bare section skeleton with no real findings does not satisfy this task."""
 
 
+_REVIEW_TASKS = {
+    "ia": {
+        "title": "an INFORMATION ARCHITECTURE & LAYOUT",
+        "task": (
+            "Evaluate the information architecture and layout of the product: "
+            "navigation structure, hierarchy/grouping of content, discoverability "
+            "of key actions, labeling/wording clarity, visual hierarchy (what "
+            "draws the eye first vs what should), and whether the screen-to-screen "
+            "flow makes sense for a first-time user. Cross-reference what you see "
+            "live in the browser against the actual source to catch discrepancies "
+            "between intended and shipped behavior."
+        ),
+        "sections": (
+            "  ## Summary (2-3 sentences: overall IA health)\n"
+            "  ## Navigation & Structure\n"
+            "  ## Hierarchy & Discoverability\n"
+            "  ## Labeling & Copy\n"
+            "  ## Specific Issues Found (numbered; each with screen/file "
+            "reference, description, severity P1/P2/P3)\n"
+            "  ## Recommendations (prioritized, concrete)"
+        ),
+    },
+    "responsive": {
+        "title": "a RESPONSIVE & ADAPTIVE DESIGN",
+        "task": (
+            "Evaluate how well the product adapts across two viewport widths "
+            "(mobile ~390px, desktop ~1280px): breakpoint correctness, touch "
+            "target/hit-area sizing on mobile, text reflow and truncation, "
+            "layout shifts or broken grids, whether desktop uses the extra space "
+            "well (vs just a stretched mobile layout), and any input-related "
+            "issues (e.g. font-size under 16px causing mobile zoom, hover-only "
+            "affordances with no touch equivalent). Drive BOTH viewports live in "
+            "the browser for every screen you review -- do not judge responsive "
+            "behavior from memory or from a single viewport."
+        ),
+        "sections": (
+            "  ## Summary (2-3 sentences: overall responsive health)\n"
+            "  ## Breakpoint Behavior\n"
+            "  ## Touch/Input Concerns\n"
+            "  ## Layout Issues by Screen (numbered; each with screen/file "
+            "reference, mobile vs desktop comparison, severity P1/P2/P3)\n"
+            "  ## Recommendations (prioritized, concrete)"
+        ),
+    },
+}
+
+
+def build_review_instruction(
+    *,
+    review_focus: str,
+    target_url: str,
+    api_key: str,
+    output_dir: str,
+    app_source_hint: str,
+    existing_content: str | None,
+) -> str:
+    """Build the single-shot instruction for a design review role.
+
+    Unlike the retired box-node review prompts (which read ONLY static
+    capture-notes.md/screens and explicitly disclaimed browser access),
+    this single-shot version DRIVES THE BROWSER LIVE -- the same
+    browser-ran proof manifest + zero-navigation refusal that gates
+    capture/persona now gates these reviews too, closing the gap that let
+    a narrated-but-never-written review pass as "success" three times in
+    round 4 (see this module's docstring, "--role review WAS ADDED").
+    Reading the app's source for cross-reference is still encouraged (via
+    bash/filesystem tools, already in the overlay bundle), but it is no
+    longer the ONLY input -- the review must show its work against the
+    REAL running app, at both viewports, this session.
+
+    NAMED SESSION, NOT THE SHARED DEFAULT (load-bearing, read before
+    touching this): capture and persona (STAGE 2/4 in the .dot) are wired
+    as a strictly sequential chain specifically so only one agent-browser
+    daemon is ever in flight -- see the .dot's "SEQUENTIAL PERSONAS"
+    header note. The two reviews are DIFFERENT: parallel_reviews
+    (STAGE 3) runs review_ia and review_responsive CONCURRENTLY
+    (shape=component, max_parallel=2). agent-browser's unnamed "default
+    session" is a single shared daemon per machine -- two concurrent
+    subprocesses both driving the default session would silently
+    stomp on each other's tabs/viewport/navigation state. Every
+    agent-browser invocation below is therefore pinned to
+    `--session review-{review_focus}` (review-ia / review-responsive),
+    giving each review branch its own isolated browser context (own
+    cookies, tabs, viewport) per agent-browser's session-isolation model.
+    Cleanup uses `agent-browser --session review-{review_focus} close`
+    (session-scoped), NEVER `close --all` -- `close --all` tears down
+    EVERY session on the machine, which would kill the OTHER review's
+    in-flight browser out from under it if both happened to be mid-walkthrough
+    at the same moment. This is the one respect in which the review
+    instruction deliberately does NOT mirror the capture/persona
+    instructions' `close --all` cleanup step.
+    """
+    task_spec = _REVIEW_TASKS[review_focus]
+    session_name = f"review-{review_focus}"
+
+    resume_block = ""
+    if existing_content:
+        resume_block = (
+            "\nA PARTIAL DRAFT from a previous attempt already exists "
+            f"({len(existing_content)} bytes). Treat it as a starting point -- "
+            "continue and extend it, don't start over from scratch. "
+            "Partial draft follows, between the markers:\n"
+            "----- BEGIN PARTIAL DRAFT -----\n"
+            f"{existing_content}\n"
+            "----- END PARTIAL DRAFT -----\n"
+        )
+
+    screenshot_hint = f"{output_dir}/screens/review-{review_focus}-session.png"
+
+    return f"""You are conducting {task_spec["title"]} review as part of a simulated-user-research round. You have real bash access (agent-browser CLI) and MUST drive the live application yourself -- this is not a review of memory or assumption, it is a review of what the running app actually does right now.
+
+How this works: do the real work with tools as you go. Your FINAL reply -- however it ends, whether or not it happens to include a tool call -- is captured programmatically and used AS the deliverable artifact. You do not need to save it to a file yourself; just make sure your LAST reply contains the complete, final, substantive review in the exact format specified below (no placeholders, no "let me write this now" -- the actual content).
+
+EVIDENCE DISCIPLINE (this run is audited): every observation is [OBSERVED] -- something you personally saw in a real browser against a real instance this session. Do not write a placeholder like "(in progress)" or "to be completed" anywhere -- an incomplete review is a failed review that will be rejected and retried, not a partial pass.
+
+CRITICAL -- ISOLATED BROWSER SESSION: this review runs IN PARALLEL with the OTHER design review, and both may be driving a real browser AT THE SAME TIME. You MUST prefix every single agent-browser command with `--session {session_name}` (e.g. `agent-browser --session {session_name} open ...`). NEVER run a bare `agent-browser` command with no `--session` flag, and NEVER run `agent-browser close --all` -- that closes every session on the machine, including the other review's in-flight browser. Use ONLY `agent-browser --session {session_name} close` to end your own session.
+
+Setup:
+- As your first action, run: agent-browser --session {session_name} close   (clears any stale state from a prior crashed attempt at THIS review; harmless if nothing was running; scoped to your own session only)
+- Target application: {target_url}
+- If the app requires a login/API key to view content, use: {api_key}
+- Application source (read via bash/filesystem to cross-reference routing, component structure, and CSS/breakpoints against what you see live): {app_source_hint}
+- Visit every primary screen a first-time user would encounter, at BOTH viewport widths for every screen you review:
+    1. Mobile: agent-browser --session {session_name} set viewport 390 844
+    2. Desktop: agent-browser --session {session_name} set viewport 1280 900
+- Take at least one screenshot via `agent-browser --session {session_name} screenshot {screenshot_hint}` as durable proof you drove a real browser this session -- this is verified mechanically downstream.
+{resume_block}
+Task:
+{task_spec["task"]}
+
+When finished, run `agent-browser --session {session_name} close` to end YOUR browser session cleanly -- REQUIRED, but scoped to your own session only (never `close --all`).
+
+Output:
+Your FINAL reply must be the complete review with these exact sections (this text is what gets saved -- there is no other save step; a provenance banner and Run ID are added automatically, you do not need to write them):
+{task_spec["sections"]}
+
+The review must be substantive and complete before you finish -- a bare section skeleton with no real findings does not satisfy this task. Never write a placeholder like "(in progress)" or "to be completed" anywhere in the file -- an incomplete review is a failed review that will be rejected and retried, not a partial pass."""
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--role", required=True, choices=["capture", "persona"])
+    parser.add_argument(
+        "--role", required=True, choices=["capture", "persona", "review"]
+    )
     parser.add_argument(
         "--bundle",
         required=True,
@@ -430,6 +612,18 @@ def main() -> None:
         "--personas-dir", default="", help="Required when --role persona"
     )
     parser.add_argument(
+        "--review-focus",
+        default="",
+        choices=["", "ia", "responsive"],
+        help="Required when --role review: which review prompt to run.",
+    )
+    parser.add_argument(
+        "--app-source-hint",
+        default="",
+        help="Required when --role review: comma-separated file/dir path(s) "
+        "for the reviewer to cross-reference against the live app.",
+    )
+    parser.add_argument(
         "--timeout-s", type=int, default=3900, help="Subprocess-level backstop timeout"
     )
     args = parser.parse_args()
@@ -454,6 +648,22 @@ def main() -> None:
             existing_content=existing_content,
         )
         banner_subject = "an LLM conducting the visual capture pass"
+    elif args.role == "review":
+        if not args.review_focus or not args.app_source_hint:
+            _last_line_exit(
+                "error:review role requires --review-focus and --app-source-hint",
+                ok=False,
+            )
+            return
+        instruction = build_review_instruction(
+            review_focus=args.review_focus,
+            target_url=args.target_url,
+            api_key=args.api_key,
+            output_dir=args.output_dir,
+            app_source_hint=args.app_source_hint,
+            existing_content=existing_content,
+        )
+        banner_subject = f"an LLM conducting the {args.review_focus} design review pass"
     else:
         if not args.persona_name or not args.personas_dir:
             _last_line_exit(

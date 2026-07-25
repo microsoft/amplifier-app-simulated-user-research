@@ -291,6 +291,89 @@ class TestRoundConfigToDotParams:
         assert params["sur_repo_dir"] == "/custom/repo/dir"
 
 
+class TestResetCommand:
+    """Optional stage-0 reset (see the .dot's STAGE 0 contract).
+
+    An un-reset test fixture corrupted two consecutive real rounds -- every
+    "triage is broken" finding traced back to a queue a human had worked
+    through days earlier. The param exists to prevent that; being OPTIONAL
+    and absent-by-default is equally load-bearing, since most projects have
+    no reset step and must never be forced to invent one.
+    """
+
+    def test_present_is_passed_through(self):
+        config = RoundConfig(
+            **_minimal_kwargs(reset_command="python3 scripts/reset_research.py --yes")
+        )
+        params = config.to_dot_params()
+        assert params["reset_command"] == "python3 scripts/reset_research.py --yes"
+
+    def test_absent_is_omitted_entirely(self):
+        """Not passed as an empty string -- omitted, so the graph no-ops."""
+        config = RoundConfig(**_minimal_kwargs())
+        assert config.reset_command is None
+        assert "reset_command" not in config.to_dot_params()
+
+    def test_empty_string_treated_as_absent(self):
+        config = RoundConfig(**_minimal_kwargs(reset_command=""))
+        assert "reset_command" not in config.to_dot_params()
+
+    def test_absent_reset_command_is_valid(self):
+        """Omitting it is legitimate -- it must not trip validation."""
+        assert RoundConfig(**_minimal_kwargs()).validate() == []
+        assert RoundConfig(**_minimal_kwargs(reset_command="")).validate() == []
+
+    def test_set_but_placeholder_is_rejected(self):
+        """A reset that doesn't really reset is the bug this stage prevents."""
+        config = RoundConfig(
+            **_minimal_kwargs(reset_command="REPLACE_ME: your reset command")
+        )
+        problems = config.validate()
+        assert any("placeholder" in p for p in problems)
+        assert any("reset_command" in p for p in problems)
+
+    def test_does_not_disturb_the_other_params(self):
+        """Mirrors seed_command: additive only, nothing else shifts."""
+        without = RoundConfig(**_minimal_kwargs()).to_dot_params()
+        with_reset = RoundConfig(
+            **_minimal_kwargs(reset_command="make reset")
+        ).to_dot_params()
+        assert set(with_reset) - set(without) == {"reset_command"}
+        assert {k: v for k, v in with_reset.items() if k != "reset_command"} == without
+
+    def test_yaml_round_trip(self, tmp_path):
+        config = RoundConfig(**_minimal_kwargs(reset_command="make reset-research"))
+        config_path = tmp_path / "project.yaml"
+        config_path.write_text(yaml.safe_dump(config.to_yaml_dict()), encoding="utf-8")
+
+        reloaded = RoundConfig.from_yaml(config_path)
+
+        assert reloaded.reset_command == "make reset-research"
+        assert reloaded.to_dot_params()["reset_command"] == "make reset-research"
+
+    def test_yaml_round_trip_when_unset(self, tmp_path):
+        config = RoundConfig(**_minimal_kwargs())
+        config_path = tmp_path / "project.yaml"
+        config_path.write_text(yaml.safe_dump(config.to_yaml_dict()), encoding="utf-8")
+
+        reloaded = RoundConfig.from_yaml(config_path)
+
+        assert reloaded.reset_command is None
+        assert "reset_command" not in reloaded.to_dot_params()
+
+    def test_key_absent_from_yaml_loads_fine(self, tmp_path):
+        """A pre-existing project.yaml (written before this feature) still loads."""
+        data = _minimal_kwargs()
+        assert "reset_command" not in data
+        config_path = tmp_path / "project.yaml"
+        config_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+        config = RoundConfig.from_yaml(config_path)
+
+        assert config.reset_command is None
+        assert config.validate() == []
+
+
 class TestRoundConfigFromYaml:
     def test_loads_from_yaml(self, tmp_path):
         data = _minimal_kwargs()

@@ -50,6 +50,21 @@ _STARTER_CONFIG_COMMENT = f"""\
 # before running `{_PROG} run --config project.yaml`.
 """
 
+# Shipped COMMENTED-OUT, not as a live `null`: absent is the legitimate default
+# (most projects have no reset step, and the graph's stage-0 node safely no-ops),
+# so a commented example teaches the key without adding an edit chore -- and
+# without a placeholder that validation would have to reject.
+_STARTER_RESET_COMMAND_HELP = """
+# reset_command: OPTIONAL. A shell command that resets your app's own state,
+#   run BEFORE seed_command -- once per round, from seed_cwd. A round must
+#   start from a state representative of a real user's first encounter:
+#   reusing a long-lived test fixture without resetting it silently corrupts
+#   findings (two consecutive real rounds reported "triage is broken" when the
+#   truth was a test queue a human had worked through days earlier). Omit it
+#   if your seed_command already produces a clean state.
+# reset_command: "python3 scripts/reset_research.py --yes"
+"""
+
 _PERSONAS_BANNER = """\
 ============================================================================
   PERSONAS ARE PRODUCT-SPECIFIC. The copied briefs were written for a
@@ -92,8 +107,15 @@ def cmd_init(args: argparse.Namespace) -> int:
         return 1
 
     starter = _build_starter_config()
-    yaml_body = cast(str, yaml.safe_dump(starter.to_yaml_dict(), sort_keys=False))
-    config_path.write_text(_STARTER_CONFIG_COMMENT + yaml_body, encoding="utf-8")
+    starter_dict = starter.to_yaml_dict()
+    # Drop the live `reset_command: null` line -- it ships as a commented
+    # example instead (see _STARTER_RESET_COMMAND_HELP for why).
+    starter_dict.pop("reset_command", None)
+    yaml_body = cast(str, yaml.safe_dump(starter_dict, sort_keys=False))
+    config_path.write_text(
+        _STARTER_CONFIG_COMMENT + yaml_body + _STARTER_RESET_COMMAND_HELP,
+        encoding="utf-8",
+    )
     print(f"{_PROG} init: wrote {config_path}")
 
     personas_dir = target_dir / "personas"
