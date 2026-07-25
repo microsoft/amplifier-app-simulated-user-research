@@ -8,7 +8,15 @@ authors = [
     { name = "Microsoft MADE:Explorations Team" },
 ]
 dependencies = [
-    "amplifier-app-simulated-user-research",
+    # The lib this module wraps, from the PUBLISHED repo -- not a path/editable
+    # install of the checkout that happens to contain this module. Being
+    # self-sufficient matters: this module is consumable on its own (someone
+    # can reference it by git URL from their own bundle), and it must not
+    # depend on the Amplifier bundle activator having editable-installed the
+    # repo root first. When the L3 bundle IS used, the activator installs the
+    # local checkout before this module and that install satisfies this
+    # requirement, so local development still exercises the working tree.
+    "amplifier-app-simulated-user-research @ git+https://github.com/microsoft/amplifier-app-simulated-user-research@main",
     # Direct git references for the FULL transitive git/URL-dependency
     # closure of amplifier-app-simulated-user-research (-> amplifier-module-
     # pipeline-runner -> {amplifier-foundation, amplifier-module-loop-

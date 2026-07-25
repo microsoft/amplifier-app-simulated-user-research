@@ -44,9 +44,18 @@ changes need a full live round (see the verification gradient in the PR template
 3. **Wheel data**: the CLI runs from `_bundled/` data force-included in the wheel.
    If you add runtime files (pipelines/scripts/personas), add them to the
    `force-include` table in pyproject or wheel installs silently lose them.
-4. **Tool-module deps**: the Amplifier module activator uses uv's legacy pip
-   resolver — it rejects *transitive* git-URL deps. The tool module's pyproject
-   declares the full transitive git closure on purpose. Keep it in sync.
+4. **Git-dep closure — in BOTH pyprojects.** The Amplifier activator installs
+   with `uv pip install -e . --no-sources --overrides <generated>`. Those
+   generated overrides pin every already-installed git dep to a bare
+   `name==version`, *stripping the git URL*; uv's pip-compatible resolver then
+   re-resolves that package's metadata and rejects ITS git deps as
+   **transitive** URL dependencies ("Package `X` was included as a URL
+   dependency…"). So the **root** `pyproject.toml` AND
+   `modules/tool-simulated-user-research/pyproject.toml` each declare the FULL
+   transitive git closure (pipeline-runner, foundation, loop-pipeline,
+   unified-llm-client) as direct deps, even though neither imports them all.
+   Adding a git dep anywhere means adding its closure too, or L3/L4 installs
+   break. Reproduce the activator's exact command to test — don't guess.
 5. **agent-browser on Linux ARM64**: Chrome-for-Testing ships no arm64 builds;
    `agent-browser install` exits 2. Remediation lives in `doctor` and README
    (`AGENT_BROWSER_EXECUTABLE_PATH` → Playwright `headless_shell`, `--no-sandbox`).
