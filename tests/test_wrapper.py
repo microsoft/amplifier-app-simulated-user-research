@@ -106,7 +106,12 @@ def _banner_then(payload: str) -> str:
 
 
 def _run_wrapper(
-    tmp_path: Path, fake_amplifier_body: str, *, role: str = "capture"
+    tmp_path: Path,
+    fake_amplifier_body: str,
+    *,
+    role: str = "capture",
+    report_name: str = "capture-notes.md",
+    extra_args: list[str] | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the wrapper against a fake `amplifier` on PATH."""
     bin_dir = tmp_path / "fakebin"
@@ -129,11 +134,12 @@ def _run_wrapper(
             "--output-dir",
             str(output_dir),
             "--report-path",
-            str(output_dir / "capture-notes.md"),
+            str(output_dir / report_name),
             "--run-id",
             RUN_ID,
             "--timeout-s",
             "30",
+            *(extra_args or []),
         ],
         capture_output=True,
         text=True,
@@ -305,6 +311,179 @@ class TestBrowserRanProof:
         assert not (tmp_path / "out" / "capture-notes.md").exists()
 
 
+class TestReviewRole:
+    """--role review (4th hardening cycle): golden tests for the fix that
+    closed round 4's review_responsive narrate-and-die incident (3x
+    outcome=success, no file written -- see the .dot header and
+    run_browser_node.py's module docstring, "--role review WAS ADDED")."""
+
+    def test_review_requires_focus_and_app_source_hint(self, tmp_path):
+        proc = _run_wrapper(
+            tmp_path,
+            _banner_then(_payload(execution_trace=_good_trace())),
+            role="review",
+            report_name="review-ia.md",
+        )
+
+        assert proc.returncode == 1
+        assert _last_stdout_line(proc).startswith("error:")
+        assert not (tmp_path / "out" / "review-ia.md").exists()
+
+    def test_review_ia_writes_report_with_session_scoped_browser_commands(
+        self, tmp_path
+    ):
+        """The session's own trace must show --session review-ia scoped
+        commands (per build_review_instruction's isolation contract) for
+        the browser-ran proof counter to see them as real activity."""
+        trace = [
+            _trace_entry("agent-browser --session review-ia close"),
+            _trace_entry("agent-browser --session review-ia open http://127.0.0.1:9"),
+            _trace_entry(
+                "agent-browser --session review-ia screenshot /tmp/out/screens/review-ia-session.png"
+            ),
+        ]
+        proc = _run_wrapper(
+            tmp_path,
+            _banner_then(
+                _payload(
+                    execution_trace=trace,
+                    response="## Summary\nreal review content",
+                )
+            ),
+            role="review",
+            report_name="review-ia.md",
+            extra_args=[
+                "--review-focus",
+                "ia",
+                "--app-source-hint",
+                "/tmp/app/src",
+            ],
+        )
+
+        assert proc.returncode == 0
+        assert _last_stdout_line(proc).startswith("wrote:")
+        report = (tmp_path / "out" / "review-ia.md").read_text(encoding="utf-8")
+        assert report.endswith("## Summary\nreal review content")
+        assert f"Run ID: {RUN_ID}" in report
+
+        manifest = json.loads(
+            (tmp_path / "out" / ".session-manifest-review-ia.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert manifest["navigations"] == 1
+        assert manifest["screenshots"] == 1
+
+    def test_review_responsive_zero_navigations_is_refused(self, tmp_path):
+        """Pins the exact incident this role fixes: a narrated-but-never-
+        driven review must be refused, not written, even though the
+        session itself reported status=success."""
+        proc = _run_wrapper(
+            tmp_path,
+            _banner_then(
+                _payload(
+                    execution_trace=[],
+                    response=(
+                        "Now I have all the information I need to write the "
+                        "review. Let me compile the complete findings:"
+                    ),
+                )
+            ),
+            role="review",
+            report_name="review-responsive.md",
+            extra_args=[
+                "--review-focus",
+                "responsive",
+                "--app-source-hint",
+                "/tmp/app/src",
+            ],
+        )
+
+        assert proc.returncode == 1
+        assert _last_stdout_line(proc).startswith("error:")
+        assert not (tmp_path / "out" / "review-responsive.md").exists()
+
+    def test_review_focus_invalid_choice_rejected(self, tmp_path):
+        proc = _run_wrapper(
+            tmp_path,
+            _banner_then(_payload(execution_trace=_good_trace())),
+            role="review",
+            report_name="review-ia.md",
+            extra_args=[
+                "--review-focus",
+                "bogus",
+                "--app-source-hint",
+                "/tmp/app/src",
+            ],
+        )
+
+        assert proc.returncode == 2  # argparse usage error
+        assert "invalid choice" in proc.stderr
+
+
+class TestBuildReviewInstruction:
+    """Unit tests for build_review_instruction (importlib, read-only)."""
+
+    def test_ia_and_responsive_focus_produce_distinct_prompts(self):
+        wrapper = _load_wrapper_module()
+        ia = wrapper.build_review_instruction(
+            review_focus="ia",
+            target_url="http://x",
+            api_key="key",
+            output_dir="/tmp/out",
+            app_source_hint="/tmp/src",
+            existing_content=None,
+        )
+        responsive = wrapper.build_review_instruction(
+            review_focus="responsive",
+            target_url="http://x",
+            api_key="key",
+            output_dir="/tmp/out",
+            app_source_hint="/tmp/src",
+            existing_content=None,
+        )
+        assert "INFORMATION ARCHITECTURE" in ia
+        assert "RESPONSIVE & ADAPTIVE" in responsive
+        assert ia != responsive
+
+    def test_every_agent_browser_command_is_session_scoped(self):
+        """Load-bearing: since parallel_reviews runs both reviews
+        concurrently, EVERY agent-browser invocation in the instruction
+        must carry --session <review_focus-scoped-name> and the
+        instruction must never suggest a bare `close --all` (which would
+        tear down the OTHER review's in-flight browser)."""
+        wrapper = _load_wrapper_module()
+        instruction = wrapper.build_review_instruction(
+            review_focus="ia",
+            target_url="http://x",
+            api_key="key",
+            output_dir="/tmp/out",
+            app_source_hint="/tmp/src",
+            existing_content=None,
+        )
+        # Match actual invocations (agent-browser followed by a subcommand
+        # token), not prose that merely mentions "the agent-browser CLI".
+        command_re = re.compile(
+            r"agent-browser\s+(?:--\S+(?:\s+\S+)?\s+)*"
+            r"(?:open|close|set|screenshot)\b"
+        )
+        agent_browser_lines = [
+            line for line in instruction.splitlines() if command_re.search(line)
+        ]
+        assert agent_browser_lines, "expected agent-browser commands in the prompt"
+        for line in agent_browser_lines:
+            assert "--session review-ia" in line, line
+        # The prose is allowed to WARN against `close --all` exactly once
+        # (e.g. "NEVER run `agent-browser close --all`") -- it must not
+        # appear anywhere else (i.e. as an actual instruction to run it).
+        occurrences = [
+            m.start() for m in re.finditer(r"agent-browser close --all", instruction)
+        ]
+        assert len(occurrences) == 1, occurrences
+        warning_context = instruction[max(0, occurrences[0] - 20) : occurrences[0]]
+        assert "NEVER run" in warning_context, warning_context
+
+
 class TestCountBrowserActivity:
     """Unit tests for the trace-counting arithmetic (importlib, read-only)."""
 
@@ -317,6 +496,27 @@ class TestCountBrowserActivity:
         ]
         activity = wrapper._count_browser_activity(trace)
         assert activity == {"navigations": 1, "screenshots": 1, "commands": 2}
+
+    def test_session_scoped_commands_are_still_counted(self):
+        """Regression guard: --role review's build_review_instruction pins
+        every agent-browser invocation to --session <name> (see its
+        "NAMED SESSION" docstring note) so two concurrent review branches
+        never fight over the shared default browser daemon. The counting
+        regex must still recognize `open`/`screenshot` as the next token
+        after a value-taking flag like `--session review-ia`, not just
+        bare boolean flags -- otherwise every review-role session would
+        silently undercount its own real navigations/screenshots and
+        hard-stop after 3 retries even though the browser genuinely ran."""
+        wrapper = _load_wrapper_module()
+        trace = [
+            _trace_entry("agent-browser --session review-ia close"),
+            _trace_entry(
+                "agent-browser --session review-ia open http://x && "
+                "agent-browser --session review-ia screenshot a.png"
+            ),
+        ]
+        activity = wrapper._count_browser_activity(trace)
+        assert activity == {"navigations": 1, "screenshots": 1, "commands": 3}
 
     def test_failed_call_counts_commands_but_not_success_metrics(self):
         wrapper = _load_wrapper_module()
