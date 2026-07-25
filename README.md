@@ -66,6 +66,8 @@ attractor run pipelines/simulated-user-research.dot --provider anthropic \
   --on-human-gate fail --logs-root <dir> --cwd <seed_cwd> --param k=v ...
 # required --params: target_url api_key seed_command personas_dir output_dir
 #   app_source_hint persona1 persona2 persona3 sur_repo_dir browser_bundle run_id
+# optional --param: reset_command (resets your app's state before seeding; omit
+#   it entirely if you have no reset step -- the stage safely no-ops)
 ```
 
 **Python lib**:

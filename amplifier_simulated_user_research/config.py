@@ -76,6 +76,23 @@ class RoundConfig:
     output_dir: str
     app_source_hint: str
     personas: list[str] = field(default_factory=list)
+    # OPTIONAL stage-0 reset, run BEFORE seed_command (see the .dot's STAGE 0
+    # contract). Most projects have none and MUST NOT be forced to supply one:
+    # when this is None/"" it is OMITTED from to_dot_params() entirely and the
+    # graph's reset_state node safely no-ops (prints `reset_skipped`).
+    #
+    # WHY IT EXISTS: a round must start from a representative state. Reusing a
+    # long-lived fixture without resetting it silently corrupts findings -- two
+    # consecutive real rounds reported "triage is broken" when the truth was a
+    # test queue a human had worked through days earlier.
+    #
+    # WORKING DIRECTORY: reset_command reuses `seed_cwd` -- deliberately, not
+    # lazily. The engine takes ONE `--cwd` for the whole run (runner.py passes
+    # seed_cwd) and the graph sets no per-node cwd, so a separate `reset_cwd`
+    # key would be a promise this plumbing could not keep. Reset and seed are
+    # both "operate on the target app's own checkout" steps, so one directory
+    # is also the unsurprising reading.
+    reset_command: str | None = None
     api_key: str | None = None
     api_key_env: str | None = None
     browser_bundle: str = "simulated-user-research-browser-node"
@@ -232,6 +249,12 @@ class RoundConfig:
         values: dict[str, str] = {
             "target_url": self.target_url,
             "seed_command": self.seed_command,
+            # An absent/empty reset_command is legitimate (most projects have
+            # none) -- `or ""` makes that case carry no sentinel. But a SET
+            # reset_command still holding a placeholder must fail loudly, same
+            # as every other key: a reset that doesn't really reset is exactly
+            # the silent-corruption failure this stage exists to prevent.
+            "reset_command": self.reset_command or "",
             "seed_cwd": self.seed_cwd,
             "personas_dir": self.personas_dir,
             "output_dir": self.output_dir,
@@ -260,7 +283,7 @@ class RoundConfig:
         instead of the first exception.
         """
         p1, p2, p3 = self.personas
-        return {
+        params = {
             "target_url": self.target_url,
             "api_key": self.resolved_api_key(),
             "seed_command": self.seed_command,
@@ -273,6 +296,15 @@ class RoundConfig:
             "sur_repo_dir": str(self.resolved_sur_repo_dir()),
             "browser_bundle": self.browser_bundle,
         }
+        # OPTIONAL param: omitted ENTIRELY when unset, never passed as an
+        # empty string. The graph's reset_state node branches on whether the
+        # substituted value is non-empty, and its STAGE 0 contract requires
+        # that an absent reset_command can never fail a run (it prints
+        # `reset_skipped`). Passing `reset_command=` would be a different,
+        # untested input shape -- so don't.
+        if self.reset_command:
+            params["reset_command"] = self.reset_command
+        return params
 
     def to_yaml_dict(self) -> dict[str, Any]:
         """Serialize back to a plain dict suitable for `yaml.safe_dump` (used by `init`)."""
@@ -281,6 +313,7 @@ class RoundConfig:
             "api_key": self.api_key,
             "api_key_env": self.api_key_env,
             "seed_command": self.seed_command,
+            "reset_command": self.reset_command,
             "seed_cwd": self.seed_cwd,
             "personas_dir": self.personas_dir,
             "output_dir": self.output_dir,
