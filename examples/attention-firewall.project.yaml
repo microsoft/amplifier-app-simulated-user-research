@@ -4,10 +4,10 @@
 # repo's first real findings (a WhatsApp-triage product called
 # attention-firewall), with machine-specific values replaced by REPLACE_ME
 # placeholders. It is a REFERENCE for what a filled-in config looks like, not
-# a runnable file: `asur run` rejects any config still carrying a REPLACE_ME
+# a runnable file: `amplifier-simulated-user-research run` rejects any config still carrying a REPLACE_ME
 # token, so copying this unedited fails loud instead of producing fiction.
 #
-# New projects should start from `asur init` (which scaffolds project.yaml +
+# New projects should start from `amplifier-simulated-user-research init` (which scaffolds project.yaml +
 # a personas/ starter in your working directory); read this file when you
 # want to see how a real round wired each key together.
 
@@ -48,8 +48,8 @@ output_dir: /REPLACE_ME/path/for/round-artifacts
 app_source_hint: /REPLACE_ME/path/to/your/app
 
 # Bundle name for the single-shot browser sessions. Register once:
-#   amplifier bundle add file://<this-repo>/browser-node-agent.yaml --name sur-browser-node
-browser_bundle: sur-browser-node
+#   amplifier bundle add file://<this-repo>/browser-node-agent.yaml --name simulated-user-research-browser-node
+browser_bundle: simulated-user-research-browser-node
 
 # LLM provider for the pipeline's own reasoning stages (needs its API key
 # in your environment; anthropic -> ANTHROPIC_API_KEY).

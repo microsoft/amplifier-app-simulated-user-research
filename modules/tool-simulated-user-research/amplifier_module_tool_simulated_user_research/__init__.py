@@ -49,7 +49,10 @@ class RunResearchRoundTool:
             "properties": {
                 "config_path": {
                     "type": "string",
-                    "description": "Path to a project.yaml (see `asur init`).",
+                    "description": (
+                        "Path to a project.yaml "
+                        "(see `amplifier-simulated-user-research init`)."
+                    ),
                 },
                 "on_human_gate": {
                     "type": "string",

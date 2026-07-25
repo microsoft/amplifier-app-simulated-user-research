@@ -109,5 +109,5 @@ params:
     label: "Browser node bundle"
     description: >
       Bundle name or path for the single-shot browser-node sessions
-      (register browser-node-agent.yaml once as e.g. "sur-browser-node").
+      (register browser-node-agent.yaml once as e.g. "simulated-user-research-browser-node").
     required: true

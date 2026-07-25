@@ -1,13 +1,16 @@
 """L4 CLI -- thin argparse front door over the L2 lib.
 
-Console scripts: `asur` (primary) and the long alias
-`amplifier-app-simulated-user-research` (see [project.scripts] in
-pyproject.toml). Subcommands:
+Console script: `amplifier-simulated-user-research` (the single command name;
+see [project.scripts] in pyproject.toml). Subcommands:
 
-    asur init [--dir DIR] [--force]      scaffold project.yaml + personas/
-    asur run --config project.yaml       run one audit round
-    asur triage --config project.yaml    grade the latest run's findings
-    asur doctor [--config project.yaml]  environment diagnostics
+    amplifier-simulated-user-research init [--dir DIR] [--force]
+        scaffold project.yaml + personas/
+    amplifier-simulated-user-research run --config project.yaml
+        run one audit round
+    amplifier-simulated-user-research triage --config project.yaml
+        grade the latest run's findings
+    amplifier-simulated-user-research doctor [--config project.yaml]
+        environment diagnostics
 
 This module contains NO pipeline logic -- see amplifier_simulated_user_research
 for the lib, and pipelines/simulated-user-research.dot for the pipeline itself.
@@ -35,13 +38,16 @@ from .triage import (
     run_triage,
 )
 
+# The one command name (owner directive: full name, no acronym).
+_PROG = "amplifier-simulated-user-research"
+
 _STARTER_PERSONAS = ("marisol", "dev", "ken")
 _PERSONA_TEMPLATE = "_TEMPLATE.md"
 
-_STARTER_CONFIG_COMMENT = """\
+_STARTER_CONFIG_COMMENT = f"""\
 # project.yaml -- simulated-user-research round configuration.
 # See the README for full field documentation. Fill in every value below
-# before running `asur run --config project.yaml`.
+# before running `{_PROG} run --config project.yaml`.
 """
 
 _PERSONAS_BANNER = """\
@@ -68,7 +74,7 @@ def _build_starter_config() -> RoundConfig:
         app_source_hint="/REPLACE_ME/absolute/path/to/your/app/src",
         personas=list(_STARTER_PERSONAS),
         api_key_env="REPLACE_ME_API_KEY_ENV_VAR",
-        browser_bundle="sur-browser-node",
+        browser_bundle="simulated-user-research-browser-node",
         provider="anthropic",
     )
 
@@ -80,7 +86,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     config_path = target_dir / "project.yaml"
     if config_path.exists() and not args.force:
         print(
-            f"asur init: {config_path} already exists (use --force to overwrite)",
+            f"{_PROG} init: {config_path} already exists (use --force to overwrite)",
             file=sys.stderr,
         )
         return 1
@@ -88,7 +94,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     starter = _build_starter_config()
     yaml_body = cast(str, yaml.safe_dump(starter.to_yaml_dict(), sort_keys=False))
     config_path.write_text(_STARTER_CONFIG_COMMENT + yaml_body, encoding="utf-8")
-    print(f"asur init: wrote {config_path}")
+    print(f"{_PROG} init: wrote {config_path}")
 
     personas_dir = target_dir / "personas"
     personas_dir.mkdir(parents=True, exist_ok=True)
@@ -104,20 +110,20 @@ def cmd_init(args: argparse.Namespace) -> int:
             shutil.copyfile(src, dst)
             copied.append(dst.name)
     if copied:
-        print(f"asur init: wrote personas/{{{', '.join(copied)}}}")
+        print(f"{_PROG} init: wrote personas/{{{', '.join(copied)}}}")
 
     print(_PERSONAS_BANNER)
     print(
-        "asur init: next steps --\n"
+        f"{_PROG} init: next steps --\n"
         "  1. Edit project.yaml: target_url, seed_command, seed_cwd, output_dir,\n"
         "     app_source_hint, and api_key or api_key_env (validation rejects the\n"
         "     REPLACE-ME placeholders until you do).\n"
         "  2. Rewrite each personas/*.md brief's session tasks for YOUR product\n"
         "     (keep identity + temperament; see personas/_TEMPLATE.md).\n"
-        "  3. Check your environment: asur doctor --config project.yaml\n"
-        "  4. Run the round: asur run --config project.yaml\n"
+        f"  3. Check your environment: {_PROG} doctor --config project.yaml\n"
+        f"  4. Run the round: {_PROG} run --config project.yaml\n"
         "  5. When it stops at the gate: read research-spec.md, answer the gate,\n"
-        "     then grade the findings: asur triage --config project.yaml"
+        f"     then grade the findings: {_PROG} triage --config project.yaml"
     )
     return 0
 
@@ -126,51 +132,51 @@ def cmd_run(args: argparse.Namespace) -> int:
     try:
         config = RoundConfig.from_yaml(args.config)
     except (FileNotFoundError, ValueError) as e:
-        print(f"asur run: {e}", file=sys.stderr)
+        print(f"{_PROG} run: {e}", file=sys.stderr)
         return 1
 
     problems = config.validate()
     if problems:
-        print("asur run: invalid config:", file=sys.stderr)
+        print(f"{_PROG} run: invalid config:", file=sys.stderr)
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
         return 1
 
     if args.on_human_gate == "fail":
         print(
-            "asur run: note -- '--on-human-gate fail' is a deprecated alias for "
+            f"{_PROG} run: note -- '--on-human-gate fail' is a deprecated alias for "
             "'stop' (same behavior: pause at the approval gate)",
             file=sys.stderr,
         )
 
-    print(f"asur run: config={args.config}")
+    print(f"{_PROG} run: config={args.config}")
     try:
         result = run_round(
             config, on_human_gate=args.on_human_gate, timeout_s=args.timeout_s
         )
     except (ValueError, RuntimeError) as e:
-        print(f"asur run: {e}", file=sys.stderr)
+        print(f"{_PROG} run: {e}", file=sys.stderr)
         return 1
 
     if result.gate_reached:
         spec_path = result.artifacts.get(SYNTHESIS_ARTIFACT, "research-spec.md")
         print(
-            f"asur run: research spec ready -> {spec_path}; read it, then re-run "
+            f"{_PROG} run: research spec ready -> {spec_path}; read it, then re-run "
             f"this command in a terminal to answer the gate (approve / request "
             f"revision)."
         )
         print(
-            f"asur run: then grade the findings (~30s): "
-            f"asur triage --config {args.config}"
+            f"{_PROG} run: then grade the findings (~30s): "
+            f"{_PROG} triage --config {args.config}"
         )
-        print(f"asur run: run_id={result.run_id} ledger={result.rounds_path}")
+        print(f"{_PROG} run: run_id={result.run_id} ledger={result.rounds_path}")
         return 0
 
-    print(f"asur run: run_id={result.run_id} status={result.status}")
-    print(f"asur run: logs_dir={result.logs_dir}")
-    print(f"asur run: artifacts={sorted(result.artifacts)}")
+    print(f"{_PROG} run: run_id={result.run_id} status={result.status}")
+    print(f"{_PROG} run: logs_dir={result.logs_dir}")
+    print(f"{_PROG} run: artifacts={sorted(result.artifacts)}")
     if result.status == "failed":
-        print("asur run: --- stderr tail ---", file=sys.stderr)
+        print(f"{_PROG} run: --- stderr tail ---", file=sys.stderr)
         print(result.stderr_tail, file=sys.stderr)
 
     return 0 if result.status == "completed" else 1
@@ -180,7 +186,7 @@ def cmd_triage(args: argparse.Namespace) -> int:
     try:
         config = RoundConfig.from_yaml(args.config)
     except (FileNotFoundError, ValueError) as e:
-        print(f"asur triage: {e}", file=sys.stderr)
+        print(f"{_PROG} triage: {e}", file=sys.stderr)
         return 1
 
     output_dir = Path(config.output_dir).expanduser()
@@ -188,8 +194,8 @@ def cmd_triage(args: argparse.Namespace) -> int:
     record = latest_round(output_dir)
     if record is None:
         print(
-            f"asur triage: no runs recorded in {output_dir}/rounds.jsonl -- "
-            f"run a round first (asur run --config {args.config})",
+            f"{_PROG} triage: no runs recorded in {output_dir}/rounds.jsonl -- "
+            f"run a round first ({_PROG} run --config {args.config})",
             file=sys.stderr,
         )
         return 1
@@ -198,26 +204,27 @@ def cmd_triage(args: argparse.Namespace) -> int:
     try:
         findings_doc = load_findings(output_dir)
     except (FileNotFoundError, ValueError) as e:
-        print(f"asur triage: {e}", file=sys.stderr)
+        print(f"{_PROG} triage: {e}", file=sys.stderr)
         return 1
 
     findings = findings_doc.get("findings", [])
     findings_run_id = findings_doc.get("run_id")
     if findings_run_id and findings_run_id != run_id:
         print(
-            f"asur triage: warning -- findings.json is stamped {findings_run_id!r} "
-            f"but you are triaging run {run_id!r}; the findings may be stale "
-            f"(from an earlier run of this round).",
+            f"{_PROG} triage: warning -- findings.json is stamped "
+            f"{findings_run_id!r} but you are triaging run {run_id!r}; the "
+            f"findings may be stale (from an earlier run of this round).",
             file=sys.stderr,
         )
 
     if not findings:
         print(
-            "asur triage: findings.json has an empty findings list -- nothing to grade"
+            f"{_PROG} triage: findings.json has an empty findings list -- "
+            "nothing to grade"
         )
         return 0
 
-    print(f"asur triage: grading {len(findings)} finding(s) for run {run_id}")
+    print(f"{_PROG} triage: grading {len(findings)} finding(s) for run {run_id}")
     gate_verdict = ask_gate_verdict(input)
     triage = run_triage(findings, input)
 
@@ -225,13 +232,14 @@ def cmd_triage(args: argparse.Namespace) -> int:
     try:
         record_triage(rounds_path, run_id, gate_verdict, triage)
     except ValueError as e:
-        print(f"asur triage: {e}", file=sys.stderr)
+        print(f"{_PROG} triage: {e}", file=sys.stderr)
         return 1
 
     print(
-        f"asur triage: recorded gate={gate_verdict} + {len(triage)} verdicts -> {rounds_path}"
+        f"{_PROG} triage: recorded gate={gate_verdict} + {len(triage)} "
+        f"verdicts -> {rounds_path}"
     )
-    print(f"asur triage: {precision_summary(findings, triage)}")
+    print(f"{_PROG} triage: {precision_summary(findings, triage)}")
     return 0
 
 
@@ -241,7 +249,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         try:
             config = RoundConfig.from_yaml(args.config)
         except (FileNotFoundError, ValueError) as e:
-            print(f"asur doctor: {e}", file=sys.stderr)
+            print(f"{_PROG} doctor: {e}", file=sys.stderr)
             return 1
 
     checks = doctor(config)
@@ -261,7 +269,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="asur",
+        prog=_PROG,
         description=(
             "Run simulated-user-research audit rounds "
             "(orchestrates the attractor .dot pipeline)."

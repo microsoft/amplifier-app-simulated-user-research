@@ -79,7 +79,8 @@ artifact blocks its own completion forever.
     PORTABLE vs REPLACE-layer markers and the named load-bearing mechanism (ONE falsifiable
     temperament rule + pre-declared yes/no bar); `PROBE:` tag convention in briefs AND
     reports (scripted probes are legitimate method — reporting them as spontaneous
-    discoveries is not); product-contamination banner in `asur init` + doctor warning on
+    discoveries is not); product-contamination banner in
+    `amplifier-simulated-user-research init` + doctor warning on
     unchanged defaults; `validate()` rejects its own REPLACE-ME sentinels.
 
 ### Gate 3 — Operational maturity

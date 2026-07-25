@@ -21,7 +21,7 @@ the artifacts it describes and two projects sharing a parent directory
 can never interleave their histories. Each record links to the previous
 run of the same project via ``prior_run_id`` (the previous line's run_id).
 ``gate`` and ``triage`` start null and are filled in later by the triage
-flow (see triage.py / `asur triage`).
+flow (see triage.py / `amplifier-simulated-user-research triage`).
 """
 
 from __future__ import annotations

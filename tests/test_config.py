@@ -64,7 +64,8 @@ class TestSentinelValidation:
         )
         problems = config.validate()
         assert any(
-            "edit project.yaml before running (asur init wrote placeholder values)" in p
+            "edit project.yaml before running "
+            "(amplifier-simulated-user-research init wrote placeholder values)" in p
             for p in problems
         )
         assert any("seed_command" in p for p in problems)
@@ -101,12 +102,13 @@ class TestSentinelValidation:
         assert not any("placeholder" in p for p in config.validate())
 
     def test_fresh_init_starter_config_is_rejected(self):
-        """The exact config `asur init` writes must fail validation until edited."""
+        """The exact config `amplifier-simulated-user-research init` writes must fail validation until edited."""
         from amplifier_simulated_user_research.cli import _build_starter_config
 
         problems = _build_starter_config().validate()
         assert any(
-            "edit project.yaml before running (asur init wrote placeholder values)" in p
+            "edit project.yaml before running "
+            "(amplifier-simulated-user-research init wrote placeholder values)" in p
             for p in problems
         )
 
