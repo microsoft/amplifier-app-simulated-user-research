@@ -13,7 +13,8 @@ they never reimplement its stages, prompts, or retry policy):
 
 - **`run_research_round`** -- runs one user-research-style AUDIT round from a
   `project.yaml` config (see the repo README, or scaffold one with
-  `asur init`). It seeds a scratch instance, captures every screen, runs
+  `amplifier-simulated-user-research init`). It seeds a scratch instance,
+  captures every screen, runs
   parallel IA/responsive design reviews, puts N personas through real
   first-run browser sessions, and synthesizes everything into one
   implementation-ready spec plus a machine-readable `findings.json`.
@@ -37,7 +38,8 @@ user session worth running; it does not replace one.
 Each run has a `run_id` and appends a record to `<output_dir>/rounds.jsonl`
 (timings, artifacts, prior-run linkage). After a human answers the gate,
 the findings should be graded (real / noise / wont-fix) -- point the human
-at `asur triage --config <project.yaml>`; the graded verdicts persist into
+at `amplifier-simulated-user-research triage --config <project.yaml>`; the
+graded verdicts persist into
 the ledger and yield the precision-at-gate metric.
 
 If a round fails for a reason that isn't obvious from the tool's output,

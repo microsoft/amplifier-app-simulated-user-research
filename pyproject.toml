@@ -27,8 +27,7 @@ dependencies = [
 ]
 
 [project.scripts]
-asur = "amplifier_simulated_user_research.cli:main"
-amplifier-app-simulated-user-research = "amplifier_simulated_user_research.cli:main"
+amplifier-simulated-user-research = "amplifier_simulated_user_research.cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -44,9 +43,10 @@ packages = ["amplifier_simulated_user_research"]
 exclude = ["amplifier_simulated_user_research/tests"]
 
 # Ship the pipeline's data files inside the wheel so `uv tool install
-# git+...` yields a fully working `asur` WITHOUT a source checkout: the .dot
-# graph, the browser/validation scripts its tool nodes shell out to, the
-# persona roster `asur init` copies, and the browser-session bundle yaml.
+# git+...` yields a fully working `amplifier-simulated-user-research` command
+# WITHOUT a source checkout: the .dot graph, the browser/validation scripts
+# its tool nodes shell out to, the persona roster `amplifier-simulated-user-research
+# init` copies, and the browser-session bundle yaml.
 # `_package_repo_root()` (config.py) prefers a real source checkout when the
 # package lives in one, and falls back to this _bundled tree when installed
 # from a wheel.

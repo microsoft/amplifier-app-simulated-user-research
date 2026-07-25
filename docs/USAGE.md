@@ -37,7 +37,7 @@ seed (script, resumable)
 ## project.yaml reference
 
 Required keys (see `examples/attention-firewall.project.yaml` for an annotated
-worked example; `asur init` scaffolds a starter):
+worked example; `amplifier-simulated-user-research init` scaffolds a starter):
 
 | Key | Meaning |
 |---|---|
@@ -49,28 +49,28 @@ worked example; `asur init` scaffolds a starter):
 | `personas` | Exactly 3 names, each matching a brief file |
 | `output_dir` | Where all round artifacts land |
 | `app_source_hint` | Path(s) the design reviewers read (your app's source) |
-| `browser_bundle` | Bundle name for browser sessions (default `sur-browser-node`) |
+| `browser_bundle` | Bundle name for browser sessions (default `simulated-user-research-browser-node`) |
 | `provider` | LLM provider (`anthropic` default; needs `ANTHROPIC_API_KEY`) |
 
 Optional: `sur_repo_dir` (auto-detected from the installed package),
 `logs_root`, `browser_executable_path` / `browser_args` (custom browser — see
 ARM64 below), `attractor_checkout` (dev-only engine escape hatch).
 
-`asur run` rejects any config still carrying a `REPLACE ME`/`REPLACE_ME`
+`amplifier-simulated-user-research run` rejects any config still carrying a `REPLACE ME`/`REPLACE_ME`
 placeholder, so an unedited scaffold fails loud instead of producing fiction.
 
 ## Answering the gate
 
 An unattended run (`--on-human-gate stop`, the default) deliberately pauses
 once `research-spec.md` exists — that is the normal, successful ending
-(`asur run` exits 0 and says so). Then:
+(`amplifier-simulated-user-research run` exits 0 and says so). Then:
 
 ```bash
 # read research-spec.md, then in a real terminal:
-asur run --config my-round/project.yaml --on-human-gate console
+amplifier-simulated-user-research run --config my-round/project.yaml --on-human-gate console
 # file guards skip completed stages -> straight to the gate; answer
 # interactively (approve / request revision / end)
-asur triage --config my-round/project.yaml
+amplifier-simulated-user-research triage --config my-round/project.yaml
 ```
 
 Gate policy values: `stop` (default; pause at the gate), `console` (answer
@@ -79,7 +79,7 @@ ledger record is derived from ground truth — exit code, artifacts on disk,
 engine logs — and `stdout_tail`/`attractor_status` are empty), `auto-approve`
 (non-interactive; picks each gate's first choice), `fail` (deprecated alias
 for `stop`). Console-gate support is on `amplifier-bundle-attractor@main`
-(PR #95); on an older engine `asur` fails loud with the exact remediation.
+(PR #95); on an older engine the CLI fails loud with the exact remediation.
 
 ## Run identity, ledger, and triage
 
@@ -96,7 +96,7 @@ ledger. Three files carry the instrumentation:
 - **`<output_dir>/findings.json`** — emitted by synthesis:
   `{"run_id", "findings": [{"id", "title", "severity", "evidence_tier",
   "confirmation", "repro", "sources"}]}`.
-- **`asur triage`** — grades each finding **real / noise / wont-fix**
+- **`amplifier-simulated-user-research triage`** — grades each finding **real / noise / wont-fix**
   (~30 seconds), records the gate verdict, persists both into the run's
   ledger record, and reports precision-at-gate with observed-tier and
   simulated-tier precision separated (simulation must not borrow the
@@ -129,7 +129,7 @@ every browser stage fails. Point it at your own binary: export
 ~/.cache/ms-playwright/chromium_headless_shell-<ver>/chrome-linux/headless_shell>`
 and `AGENT_BROWSER_ARGS="--no-sandbox"`, or set `browser_executable_path` /
 `browser_args` in project.yaml (`run_round` exports them into the pipeline
-environment). `asur doctor` launch-tests the browser for real (`open
+environment). The `doctor` subcommand launch-tests the browser for real (`open
 about:blank` + close — this closes any live agent-browser session, so don't
 run doctor mid-round) and suggests the newest Playwright headless_shell found
 on the box.

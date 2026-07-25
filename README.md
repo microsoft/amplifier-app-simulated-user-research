@@ -17,13 +17,13 @@ HIGH-severity bugs, a privacy leak, and consent-copy overclaims.
 
 ```bash
 uv tool install git+https://github.com/microsoft/amplifier-app-simulated-user-research
-asur doctor                          # environment check (launches a real browser once)
-asur init --dir my-round             # scaffold project.yaml + personas/
+amplifier-simulated-user-research doctor        # environment check (launches a real browser once)
+amplifier-simulated-user-research init --dir my-round   # scaffold project.yaml + personas/
 # edit my-round/project.yaml (target URL + credential, seed command) and
 # rewrite my-round/personas/*.md session tasks for YOUR product
-asur run --config my-round/project.yaml            # pauses at the approval gate
-asur run --config my-round/project.yaml --on-human-gate console   # answer the gate
-asur triage --config my-round/project.yaml         # grade findings -> precision number
+amplifier-simulated-user-research run --config my-round/project.yaml    # pauses at the approval gate
+amplifier-simulated-user-research run --config my-round/project.yaml --on-human-gate console
+amplifier-simulated-user-research triage --config my-round/project.yaml # grade findings -> precision number
 ```
 
 The only required inputs: your app's URL + login credential, a shell command that
@@ -37,23 +37,25 @@ Validation rejects the scaffold's REPLACE-ME placeholders until you edit them.
   `agent-browser install`. *Linux ARM64*: no Chrome-for-Testing builds exist —
   set `AGENT_BROWSER_EXECUTABLE_PATH=<system chromium or Playwright's
   chromium_headless_shell>` and `AGENT_BROWSER_ARGS="--no-sandbox"` (or the
-  `browser_executable_path`/`browser_args` keys in project.yaml). `asur doctor`
-  launch-tests this for real and suggests a binary if one is installed.
+  `browser_executable_path`/`browser_args` keys in project.yaml). The `doctor`
+  subcommand launch-tests this for real and suggests a binary if one is installed.
 - **`ANTHROPIC_API_KEY`** in the environment (the pipeline's LLM provider key —
   unrelated to your app's own login credential in project.yaml).
 - The pipeline engine (`amplifier-bundle-attractor`'s pipeline-runner) arrives
   automatically as a dependency, and the pipeline's data files (graph, scripts,
   personas) ship inside the wheel — no source checkout needed. Register the
-  browser-session bundle once (`asur doctor` prints the resolved yaml path):
-  `amplifier bundle add file://<path>/browser-node-agent.yaml --name sur-browser-node`.
+  browser-session bundle once (the `doctor` subcommand prints the resolved yaml path):
+  `amplifier bundle add file://<path>/browser-node-agent.yaml --name simulated-user-research-browser-node`.
 
 ## Four ways to consume it
 
-**CLI** (primary; `asur` = `amplifier-app-simulated-user-research`):
+**CLI** (primary; the `amplifier-simulated-user-research` command):
 
 ```bash
-asur init --dir my-round && asur doctor --config my-round/project.yaml
-asur run --config my-round/project.yaml && asur triage --config my-round/project.yaml
+amplifier-simulated-user-research init --dir my-round
+amplifier-simulated-user-research doctor --config my-round/project.yaml
+amplifier-simulated-user-research run --config my-round/project.yaml
+amplifier-simulated-user-research triage --config my-round/project.yaml
 ```
 
 **Pure attractor pipeline** (composes into larger flows; the `.dot` is the logic
@@ -103,8 +105,8 @@ stages (delete an artifact to force its stage to re-run):
 carries repro steps) vs `[SIMULATED]` (persona judgment — a product of the brief,
 not a human) — and persona reports open with a provenance banner saying exactly
 that. The wrapper refuses to write a report when the session trace shows zero real
-browser navigations (hallucinated sessions die loudly, not plausibly). `asur
-triage` grades findings real/noise/wont-fix and reports **precision at gate** with
+browser navigations (hallucinated sessions die loudly, not plausibly). The `triage`
+subcommand grades findings real/noise/wont-fix and reports **precision at gate** with
 observed and simulated tiers separated. Deep story: [docs/BEST-IN-CLASS-BACKLOG.md](docs/BEST-IN-CLASS-BACKLOG.md).
 
 ## Personas
@@ -113,7 +115,8 @@ observed and simulated tiers separated. Deep story: [docs/BEST-IN-CLASS-BACKLOG.
 user, privacy-adversarial evaluator) plus `_TEMPLATE.md`, which marks what's
 [PORTABLE] (identity, temperament, the pre-declared yes/no bar) vs what you must
 [REPLACE] (session tasks naming YOUR product's surfaces — unchanged defaults
-against a different product produce fiction, and `asur doctor` warns about it).
+against a different product produce fiction, and the `doctor` subcommand warns
+about it).
 Scripted steers are tagged `PROBE:` in briefs and reports, so scripted probes are
 never laundered as spontaneous discoveries.
 

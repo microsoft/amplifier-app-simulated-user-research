@@ -1,4 +1,4 @@
-"""Tests for the asur CLI surface: init scaffolding, gate messaging,
+"""Tests for the amplifier-simulated-user-research CLI surface: init scaffolding, gate messaging,
 sentinel rejection, the stop/fail alias, and the triage command."""
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ class TestInit:
         out = capsys.readouterr().out
         assert "PERSONAS ARE PRODUCT-SPECIFIC" in out
         assert "1." in out and "2." in out  # numbered next steps
-        assert "asur triage" in out
+        assert "amplifier-simulated-user-research triage" in out
 
     def test_starter_config_is_rejected_by_run(self, tmp_path, capsys):
         main(["init", "--dir", str(tmp_path / "round")])
@@ -84,7 +84,7 @@ class TestRunGateMessaging:
         out = capsys.readouterr().out
         assert "research spec ready ->" in out
         assert "re-run this command in a terminal to answer the gate" in out
-        assert "asur triage" in out
+        assert "amplifier-simulated-user-research triage" in out
         # the old status-line dump is gone from the gate path
         assert "attractor_status=" not in out
 

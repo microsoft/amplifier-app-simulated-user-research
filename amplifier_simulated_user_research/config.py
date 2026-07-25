@@ -1,7 +1,7 @@
 """RoundConfig -- per-project configuration for a simulated-user-research round.
 
 This module owns loading/validating the YAML config a project author writes
-(see `asur init`). It does NOT contain any
+(see `amplifier-simulated-user-research init`). It does NOT contain any
 pipeline logic -- it only knows how to turn a project's settings into the
 flat `--param key=value` map the attractor `.dot` graph expects. The `.dot`
 file (pipelines/simulated-user-research.dot) remains the single source of
@@ -19,12 +19,14 @@ import yaml
 
 _REQUIRED_PERSONA_COUNT = 3
 
-# Placeholder tokens `asur init` writes into the starter project.yaml.
-# validate() rejects any value still carrying one -- running a round against
-# placeholder settings produces confidently wrong output, not an error.
+# Placeholder tokens `amplifier-simulated-user-research init` writes into the
+# starter project.yaml. validate() rejects any value still carrying one --
+# running a round against placeholder settings produces confidently wrong
+# output, not an error.
 _SENTINEL_TOKENS = ("REPLACE ME", "REPLACE_ME")
 _SENTINEL_MESSAGE = (
-    "edit project.yaml before running (asur init wrote placeholder values)"
+    "edit project.yaml before running "
+    "(amplifier-simulated-user-research init wrote placeholder values)"
 )
 
 
@@ -76,7 +78,7 @@ class RoundConfig:
     personas: list[str] = field(default_factory=list)
     api_key: str | None = None
     api_key_env: str | None = None
-    browser_bundle: str = "sur-browser-node"
+    browser_bundle: str = "simulated-user-research-browser-node"
     sur_repo_dir: str | None = None
     provider: str = "anthropic"
     logs_root: str | None = None
@@ -226,7 +228,7 @@ class RoundConfig:
         return problems
 
     def _fields_with_sentinels(self) -> list[str]:
-        """Names of fields still carrying an `asur init` placeholder token."""
+        """Names of fields still carrying an init-scaffold placeholder token."""
         values: dict[str, str] = {
             "target_url": self.target_url,
             "seed_command": self.seed_command,
