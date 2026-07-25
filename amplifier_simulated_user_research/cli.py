@@ -1,7 +1,8 @@
 """L4 CLI -- thin argparse front door over the L2 lib.
 
-Console scripts: `amplifier-simulated-user-research` and the short alias
-`asur` (see [project.scripts] in pyproject.toml). Subcommands:
+Console scripts: `asur` (primary) and the long alias
+`amplifier-app-simulated-user-research` (see [project.scripts] in
+pyproject.toml). Subcommands:
 
     asur init [--dir DIR] [--force]      scaffold project.yaml + personas/
     asur run --config project.yaml       run one audit round

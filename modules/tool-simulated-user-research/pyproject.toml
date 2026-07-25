@@ -1,16 +1,16 @@
 [project]
 name = "amplifier-module-tool-simulated-user-research"
 version = "0.1.0"
-description = "Agent-callable tools for running simulated-user-research rounds (thin wrapper over the amplifier-simulated-user-research lib)"
+description = "Agent-callable tools for running simulated-user-research audit rounds (thin wrapper over the amplifier-app-simulated-user-research lib)"
 license = { text = "MIT" }
 requires-python = ">=3.11"
 authors = [
     { name = "Microsoft MADE:Explorations Team" },
 ]
 dependencies = [
-    "amplifier-simulated-user-research",
+    "amplifier-app-simulated-user-research",
     # Direct git references for the FULL transitive git/URL-dependency
-    # closure of amplifier-simulated-user-research (-> amplifier-module-
+    # closure of amplifier-app-simulated-user-research (-> amplifier-module-
     # pipeline-runner -> {amplifier-foundation, amplifier-module-loop-
     # pipeline} -> amplifier-unified-llm-client). Required because the
     # amplifier module activator installs each module via
@@ -43,7 +43,7 @@ build-backend = "hatchling.build"
 [tool.uv]
 package = true
 # Constraint-only pins (NOT direct dependencies) for the transitive git/URL
-# deps that amplifier-simulated-user-research -> amplifier-module-pipeline-runner
+# deps that amplifier-app-simulated-user-research -> amplifier-module-pipeline-runner
 # pulls in. Required because the amplifier module activator installs each
 # module via `uv pip install -e . --no-sources` (uv's legacy pip resolver),
 # which rejects any URL/git dependency that appears only transitively unless
@@ -61,11 +61,13 @@ constraint-dependencies = [
 ]
 
 [tool.uv.sources]
-# LOCAL-ONLY for now -- this repo has not been published (see README
-# "Provenance"; task scope was explicitly local work only). Once pushed,
-# replace with a git dependency, e.g.:
-#   amplifier-simulated-user-research = { git = "https://github.com/<org>/amplifier-simulated-user-research", rev = "main" }
-amplifier-simulated-user-research = { path = "../..", editable = true }
+# LOCAL path source for in-repo development (`uv sync` inside this module).
+# The amplifier module activator installs with `--no-sources`, which strips
+# this override -- at that point the bare name above must resolve. Once the
+# repo is public, downstream consumers referencing this module by git URL
+# should add:
+#   amplifier-app-simulated-user-research = { git = "https://github.com/microsoft/amplifier-app-simulated-user-research", rev = "main" }
+amplifier-app-simulated-user-research = { path = "../..", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = [

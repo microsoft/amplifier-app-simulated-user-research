@@ -111,6 +111,48 @@ class TestSentinelValidation:
         )
 
 
+class TestPackageRepoRoot:
+    """_package_repo_root() supports both layouts: source checkout and
+    wheel install (files force-included under <package>/_bundled)."""
+
+    def _fake_config_at(self, monkeypatch, config_py: Path):
+        import amplifier_simulated_user_research.config as config_module
+
+        config_py.parent.mkdir(parents=True, exist_ok=True)
+        config_py.write_text("# fake\n", encoding="utf-8")
+        monkeypatch.setattr(config_module, "__file__", str(config_py))
+        return config_module
+
+    def test_prefers_source_checkout_layout(self, tmp_path, monkeypatch):
+        repo = tmp_path / "checkout"
+        dot = repo / "pipelines" / "simulated-user-research.dot"
+        dot.parent.mkdir(parents=True)
+        dot.write_text("digraph {}", encoding="utf-8")
+        config_module = self._fake_config_at(
+            monkeypatch, repo / "amplifier_simulated_user_research" / "config.py"
+        )
+
+        assert config_module._package_repo_root() == repo
+
+    def test_falls_back_to_bundled_tree_for_wheel_installs(self, tmp_path, monkeypatch):
+        pkg = tmp_path / "site-packages" / "amplifier_simulated_user_research"
+        bundled_dot = pkg / "_bundled" / "pipelines" / "simulated-user-research.dot"
+        bundled_dot.parent.mkdir(parents=True)
+        bundled_dot.write_text("digraph {}", encoding="utf-8")
+        config_module = self._fake_config_at(monkeypatch, pkg / "config.py")
+
+        assert config_module._package_repo_root() == pkg / "_bundled"
+
+    def test_returns_checkout_guess_when_neither_layout_found(
+        self, tmp_path, monkeypatch
+    ):
+        pkg = tmp_path / "nowhere" / "amplifier_simulated_user_research"
+        config_module = self._fake_config_at(monkeypatch, pkg / "config.py")
+
+        # doctor()'s ".dot present" check reports this loudly downstream
+        assert config_module._package_repo_root() == tmp_path / "nowhere"
+
+
 class TestBrowserEnv:
     def test_empty_by_default(self):
         config = RoundConfig(**_minimal_kwargs())

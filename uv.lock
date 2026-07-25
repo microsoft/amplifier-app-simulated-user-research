@@ -7,6 +7,33 @@ resolution-markers = [
 ]
 
 [[package]]
+name = "amplifier-app-simulated-user-research"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "amplifier-module-pipeline-runner" },
+    { name = "pyyaml" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "amplifier-module-pipeline-runner", git = "https://github.com/microsoft/amplifier-bundle-attractor?subdirectory=modules%2Fpipeline-runner&rev=main" },
+    { name = "pyyaml", specifier = ">=6.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", specifier = ">=1.0.0" },
+]
+
+[[package]]
 name = "amplifier-core"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -52,33 +79,6 @@ dependencies = [
     { name = "amplifier-core" },
     { name = "amplifier-foundation" },
     { name = "amplifier-module-loop-pipeline" },
-]
-
-[[package]]
-name = "amplifier-simulated-user-research"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "amplifier-module-pipeline-runner" },
-    { name = "pyyaml" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "amplifier-module-pipeline-runner", git = "https://github.com/microsoft/amplifier-bundle-attractor?subdirectory=modules%2Fpipeline-runner&rev=main" },
-    { name = "pyyaml", specifier = ">=6.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", specifier = ">=1.0.0" },
 ]
 
 [[package]]

@@ -1,11 +1,25 @@
 [project]
-name = "amplifier-simulated-user-research"
+name = "amplifier-app-simulated-user-research"
 version = "0.1.0"
-description = "L2/L4 orchestration over the simulated-user-research attractor pipeline (the .dot is the logic home)"
+description = "Automated product-audit rounds with persona lenses: real browser, real seeded instance, evidence-tiered findings, human approve/revise gate"
+readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
 authors = [
     { name = "Microsoft MADE:Explorations Team" },
+]
+keywords = ["amplifier", "user-research", "product-audit", "personas", "browser-automation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
 ]
 dependencies = [
     "amplifier-module-pipeline-runner @ git+https://github.com/microsoft/amplifier-bundle-attractor@main#subdirectory=modules/pipeline-runner",
@@ -13,16 +27,34 @@ dependencies = [
 ]
 
 [project.scripts]
-amplifier-simulated-user-research = "amplifier_simulated_user_research.cli:main"
 asur = "amplifier_simulated_user_research.cli:main"
+amplifier-app-simulated-user-research = "amplifier_simulated_user_research.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# NOTE: the Python package directory stays `amplifier_simulated_user_research`
+# (no "app") deliberately -- import stability. The tool module, the tests, the
+# bundle awareness docs, and any downstream `import amplifier_simulated_user_research`
+# all reference it; the distribution name and the import name of a package are
+# independent, and renaming the import path buys nothing but churn.
 [tool.hatch.build.targets.wheel]
 packages = ["amplifier_simulated_user_research"]
 exclude = ["amplifier_simulated_user_research/tests"]
+
+# Ship the pipeline's data files inside the wheel so `uv tool install
+# git+...` yields a fully working `asur` WITHOUT a source checkout: the .dot
+# graph, the browser/validation scripts its tool nodes shell out to, the
+# persona roster `asur init` copies, and the browser-session bundle yaml.
+# `_package_repo_root()` (config.py) prefers a real source checkout when the
+# package lives in one, and falls back to this _bundled tree when installed
+# from a wheel.
+[tool.hatch.build.targets.wheel.force-include]
+"pipelines" = "amplifier_simulated_user_research/_bundled/pipelines"
+"scripts" = "amplifier_simulated_user_research/_bundled/scripts"
+"personas" = "amplifier_simulated_user_research/_bundled/personas"
+"browser-node-agent.yaml" = "amplifier_simulated_user_research/_bundled/browser-node-agent.yaml"
 
 [tool.hatch.metadata]
 allow-direct-references = true

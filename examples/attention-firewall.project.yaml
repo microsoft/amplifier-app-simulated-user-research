@@ -1,14 +1,63 @@
+# examples/attention-firewall.project.yaml
+#
+# The maintainers' worked example -- the exact round shape that produced this
+# repo's first real findings (a WhatsApp-triage product called
+# attention-firewall), with machine-specific values replaced by REPLACE_ME
+# placeholders. It is a REFERENCE for what a filled-in config looks like, not
+# a runnable file: `asur run` rejects any config still carrying a REPLACE_ME
+# token, so copying this unedited fails loud instead of producing fiction.
+#
+# New projects should start from `asur init` (which scaffolds project.yaml +
+# a personas/ starter in your working directory); read this file when you
+# want to see how a real round wired each key together.
+
+# Base URL of the RUNNING scratch instance to audit. Use a disposable
+# instance seeded with realistic data -- never production.
 target_url: http://127.0.0.1:8892
-api_key: research-petalcrumb-2026
-seed_command: "python3 scripts/seed_research.py --base-url http://127.0.0.1:8892 --api-key research-petalcrumb-2026"
-seed_cwd: /home/bkrabach/dev/fable-whatsapp/attention-firewall/server
-personas_dir: /home/bkrabach/dev/fable-whatsapp/amplifier-simulated-user-research/personas
-output_dir: /home/bkrabach/dev/fable-whatsapp/verify-shots/research-round-2
-app_source_hint: /home/bkrabach/dev/fable-whatsapp/attention-firewall
+
+# The TARGET APP's login credential (what persona sessions type into the
+# app's own auth flow). Prefer api_key_env (reads from your environment) so
+# no credential lives in this file; api_key: <literal> also works locally.
+# This is unrelated to ANTHROPIC_API_KEY (the LLM provider's key).
+api_key_env: REPLACE_ME_APP_API_KEY_ENV_VAR
+
+# Shell command that seeds/refreshes the scratch instance with lived-in
+# data. Must be safely re-runnable; the pipeline skips it once seeded.
+# The real round used the app's own seeding script, e.g.:
+#   python3 scripts/seed_research.py --base-url http://127.0.0.1:8892 --api-key $APP_API_KEY
+seed_command: "REPLACE_ME: shell command that seeds your scratch instance"
+
+# Directory the seed_command runs from (usually your app's server root).
+seed_cwd: /REPLACE_ME/path/to/your/app/server
+
+# Folder of <name>.md persona briefs. The names below must each have a
+# matching brief file. Rewrite the briefs' session tasks for YOUR product
+# (keep identity + temperament) -- see personas/_TEMPLATE.md.
+personas_dir: /REPLACE_ME/path/to/your/personas
 personas:
-  - marisol
-  - dev
-  - ken
+  - marisol   # non-technical operator
+  - dev       # impatient power user
+  - ken       # privacy-adversarial evaluator
+
+# Where all round artifacts land (reports, spec, findings.json,
+# rounds.jsonl ledger, .attractor-logs/). One directory per round.
+output_dir: /REPLACE_ME/path/for/round-artifacts
+
+# Path(s) the design reviewers read to cross-reference screenshots against
+# the actual implementation (your app's source tree).
+app_source_hint: /REPLACE_ME/path/to/your/app
+
+# Bundle name for the single-shot browser sessions. Register once:
+#   amplifier bundle add file://<this-repo>/browser-node-agent.yaml --name sur-browser-node
 browser_bundle: sur-browser-node
-sur_repo_dir: /home/bkrabach/dev/fable-whatsapp/amplifier-simulated-user-research
+
+# LLM provider for the pipeline's own reasoning stages (needs its API key
+# in your environment; anthropic -> ANTHROPIC_API_KEY).
 provider: anthropic
+
+# --- Optional keys (uncomment when needed) --------------------------------
+# sur_repo_dir: /path/to/amplifier-app-simulated-user-research
+#   (auto-detected from the installed package; set only for unusual layouts)
+# browser_executable_path: ~/.cache/ms-playwright/chromium_headless_shell-<ver>/chrome-linux/headless_shell
+# browser_args: "--no-sandbox"
+#   (Linux ARM64 / custom browser -- see README "Prerequisites")

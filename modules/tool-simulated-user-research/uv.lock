@@ -13,6 +13,27 @@ constraints = [
 ]
 
 [[package]]
+name = "amplifier-app-simulated-user-research"
+version = "0.1.0"
+source = { editable = "../../" }
+dependencies = [
+    { name = "amplifier-module-pipeline-runner" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "amplifier-module-pipeline-runner", git = "https://github.com/microsoft/amplifier-bundle-attractor?subdirectory=modules%2Fpipeline-runner&rev=main" },
+    { name = "pyyaml", specifier = ">=6.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", specifier = ">=1.0.0" },
+]
+
+[[package]]
 name = "amplifier-core"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -65,10 +86,10 @@ name = "amplifier-module-tool-simulated-user-research"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "amplifier-app-simulated-user-research" },
     { name = "amplifier-foundation" },
     { name = "amplifier-module-loop-pipeline" },
     { name = "amplifier-module-pipeline-runner" },
-    { name = "amplifier-simulated-user-research" },
     { name = "amplifier-unified-llm-client" },
 ]
 
@@ -80,32 +101,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "amplifier-app-simulated-user-research", editable = "../../" },
     { name = "amplifier-foundation", git = "https://github.com/microsoft/amplifier-foundation?rev=main" },
     { name = "amplifier-module-loop-pipeline", git = "https://github.com/microsoft/amplifier-bundle-attractor?subdirectory=modules%2Floop-pipeline&rev=main" },
     { name = "amplifier-module-pipeline-runner", git = "https://github.com/microsoft/amplifier-bundle-attractor?subdirectory=modules%2Fpipeline-runner&rev=main" },
-    { name = "amplifier-simulated-user-research", editable = "../../" },
     { name = "amplifier-unified-llm-client", git = "https://github.com/microsoft/amplifier-bundle-attractor?subdirectory=modules%2Funified-llm-client&rev=main" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", specifier = ">=1.0.0" },
-]
-
-[[package]]
-name = "amplifier-simulated-user-research"
-version = "0.1.0"
-source = { editable = "../../" }
-dependencies = [
-    { name = "amplifier-module-pipeline-runner" },
-    { name = "pyyaml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "amplifier-module-pipeline-runner", git = "https://github.com/microsoft/amplifier-bundle-attractor?subdirectory=modules%2Fpipeline-runner&rev=main" },
-    { name = "pyyaml", specifier = ">=6.0" },
 ]
 
 [package.metadata.requires-dev]

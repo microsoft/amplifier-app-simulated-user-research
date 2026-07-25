@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Environments & tool caches (uv/ruff/pytest also self-ignore via nested
+# .gitignore files, listed here for belt-and-braces)
+.venv/
+.ruff_cache/
+.pytest_cache/
+
+# Round artifacts (never commit a research round's output into this repo)
+research-round-*/
+rounds.jsonl

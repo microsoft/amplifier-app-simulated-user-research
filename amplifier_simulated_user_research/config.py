@@ -1,7 +1,7 @@
 """RoundConfig -- per-project configuration for a simulated-user-research round.
 
 This module owns loading/validating the YAML config a project author writes
-(see `amplifier-simulated-user-research init`). It does NOT contain any
+(see `asur init`). It does NOT contain any
 pipeline logic -- it only knows how to turn a project's settings into the
 flat `--param key=value` map the attractor `.dot` graph expects. The `.dot`
 file (pipelines/simulated-user-research.dot) remains the single source of
@@ -31,13 +31,31 @@ _SENTINEL_MESSAGE = (
 def _package_repo_root() -> Path:
     """Best-effort default for `sur_repo_dir`.
 
-    This file lives at <repo_root>/amplifier_simulated_user_research/config.py,
-    so its grandparent directory is the repo root -- true whenever this
-    package is used from a source checkout (the supported way to run this
-    tool today; see README "Prerequisites"). A project.yaml or CLI flag can
-    always override this for other layouts.
+    Two supported layouts, checked in order:
+
+    1. Source checkout: this file lives at
+       <repo_root>/amplifier_simulated_user_research/config.py, so the
+       grandparent directory is the repo root (contains pipelines/,
+       scripts/, personas/, browser-node-agent.yaml).
+    2. Wheel install (e.g. `uv tool install git+...`): the same files are
+       shipped inside the package under `_bundled/` (see the
+       force-include table in pyproject.toml), which then serves as the
+       "repo root" -- every consumer resolves paths relative to this
+       directory (`<root>/pipelines/...`, `<root>/scripts/...`), so the
+       bundled tree is a drop-in substitute.
+
+    A project.yaml `sur_repo_dir` or CLI flag always overrides both.
     """
-    return Path(__file__).resolve().parent.parent
+    package_dir = Path(__file__).resolve().parent
+    checkout = package_dir.parent
+    if (checkout / "pipelines" / "simulated-user-research.dot").is_file():
+        return checkout
+    bundled = package_dir / "_bundled"
+    if (bundled / "pipelines" / "simulated-user-research.dot").is_file():
+        return bundled
+    # Neither layout found -- return the checkout guess; doctor()'s
+    # "pipeline .dot present" check reports the problem loudly.
+    return checkout
 
 
 @dataclass
@@ -153,7 +171,7 @@ class RoundConfig:
         return env
 
     def resolved_sur_repo_dir(self) -> Path:
-        """Absolute path to the amplifier-simulated-user-research repo root."""
+        """Absolute path to the amplifier-app-simulated-user-research repo root."""
         return (
             Path(self.sur_repo_dir).expanduser()
             if self.sur_repo_dir

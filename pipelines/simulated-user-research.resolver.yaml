@@ -100,7 +100,7 @@ params:
     input: shortText
     label: "Pipeline repo root"
     description: >
-      Absolute path to the amplifier-simulated-user-research repo root (the
+      Absolute path to the amplifier-app-simulated-user-research repo root (the
       directory containing scripts/ and browser-node-agent.yaml -- NOT the
       pipelines/ subdirectory this .dot lives in).
     required: true
