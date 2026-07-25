@@ -11,7 +11,10 @@ name = "amplifier-app-simulated-user-research"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "amplifier-foundation" },
+    { name = "amplifier-module-loop-pipeline" },
     { name = "amplifier-module-pipeline-runner" },
+    { name = "amplifier-unified-llm-client" },
     { name = "pyyaml" },
 ]
 
@@ -23,7 +26,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "amplifier-foundation", git = "https://github.com/microsoft/amplifier-foundation?rev=main" },
+    { name = "amplifier-module-loop-pipeline", git = "https://github.com/microsoft/amplifier-bundle-attractor?subdirectory=modules%2Floop-pipeline&rev=main" },
     { name = "amplifier-module-pipeline-runner", git = "https://github.com/microsoft/amplifier-bundle-attractor?subdirectory=modules%2Fpipeline-runner&rev=main" },
+    { name = "amplifier-unified-llm-client", git = "https://github.com/microsoft/amplifier-bundle-attractor?subdirectory=modules%2Funified-llm-client&rev=main" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]
 

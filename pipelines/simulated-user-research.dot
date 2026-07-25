@@ -250,7 +250,7 @@ digraph SimulatedUserResearch {
     //                       this roster."
     //   sur_repo_dir     -- absolute path to the amplifier-simulated-user-
     //                       research REPO ROOT (the directory containing
-    //                       scripts/ and browser-node-agent.yaml) -- NOT the
+    //                       scripts/ and bundles/) -- NOT the
     //                       pipelines/ subdirectory this .dot file itself
     //                       lives in. Needed so the four tool-node browser
     //                       stages can find scripts/run_browser_node.py. Not
@@ -266,9 +266,12 @@ digraph SimulatedUserResearch {
     //   browser_bundle   -- the bundle name or path run_browser_node.py's
     //                       --bundle flag should pass to
     //                       `amplifier run -B <browser_bundle>`. Register
-    //                       browser-node-agent.yaml (in this repo) once via
-    //                       `amplifier bundle add file://$sur_repo_dir/browser-node-agent.yaml --name sur-browser-node`
-    //                       then pass browser_bundle=sur-browser-node (or
+    //                       bundles/browser-node-agent.yaml (in this repo)
+    //                       once via `amplifier bundle add
+    //                       file://$sur_repo_dir/bundles/browser-node-agent.yaml
+    //                       --name simulated-user-research-browser-node`
+    //                       then pass
+    //                       browser_bundle=simulated-user-research-browser-node (or
     //                       pass the file://... path directly — both work,
     //                       proven live; the registered name is more
     //                       portable/readable in run invocations).

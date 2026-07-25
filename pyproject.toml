@@ -22,7 +22,26 @@ classifiers = [
     "Topic :: Software Development :: Testing",
 ]
 dependencies = [
+    # The engine this lib orchestrates (its `attractor` console script).
     "amplifier-module-pipeline-runner @ git+https://github.com/microsoft/amplifier-bundle-attractor@main#subdirectory=modules/pipeline-runner",
+    # The next three are pipeline-runner's OWN transitive git/URL closure,
+    # declared DIRECTLY here even though this lib never imports them. This is
+    # not redundancy -- it is required by the Amplifier bundle activator, which
+    # installs a bundle's package with `uv pip install -e . --no-sources
+    # --overrides <generated>`. Those generated overrides pin every already-
+    # installed git dep to a bare `name==version`, STRIPPING the git URL; uv's
+    # pip-compatible resolver then re-resolves pipeline-runner's metadata and
+    # rejects ITS git deps as *transitive* URL dependencies:
+    #   "Package `amplifier-foundation` was included as a URL dependency. URL
+    #    dependencies must be expressed as direct requirements or constraints."
+    # Declaring the closure here makes every URL dep direct, so the override
+    # path resolves. Verified live (2026-07-24) by reproducing the activator's
+    # exact command. Same constraint documented in AGENTS.md pitfall 4 and
+    # applied in modules/tool-simulated-user-research/pyproject.toml. If a NEW
+    # package ever appears in that error, add its exact spec here too.
+    "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main",
+    "amplifier-module-loop-pipeline @ git+https://github.com/microsoft/amplifier-bundle-attractor@main#subdirectory=modules/loop-pipeline",
+    "amplifier-unified-llm-client @ git+https://github.com/microsoft/amplifier-bundle-attractor@main#subdirectory=modules/unified-llm-client",
     "pyyaml>=6.0",
 ]
 
@@ -54,7 +73,7 @@ exclude = ["amplifier_simulated_user_research/tests"]
 "pipelines" = "amplifier_simulated_user_research/_bundled/pipelines"
 "scripts" = "amplifier_simulated_user_research/_bundled/scripts"
 "personas" = "amplifier_simulated_user_research/_bundled/personas"
-"browser-node-agent.yaml" = "amplifier_simulated_user_research/_bundled/browser-node-agent.yaml"
+"bundles" = "amplifier_simulated_user_research/_bundled/bundles"
 
 [tool.hatch.metadata]
 allow-direct-references = true

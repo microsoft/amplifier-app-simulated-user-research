@@ -31,8 +31,16 @@
 # dragging in machinery this call path can't use.
 #
 # HOW TO POINT THE RUNNER AT THIS FILE:
-#   amplifier run -B /absolute/path/to/simulated-user-research/browser-node-agent.yaml \
+#   amplifier run -B /absolute/path/to/<repo>/bundles/browser-node-agent.yaml \
 #     --mode single --output-format json "<instruction>"
+#
+# THIS FILE MUST STAY IN A PACKAGE-FREE DIRECTORY (bundles/), never beside
+# the repo's pyproject.toml: the Amplifier bundle activator editable-installs
+# whatever Python package sits in the bundle yaml's own directory. With this
+# yaml at the repo root, activation tried to install the entire
+# amplifier-app-simulated-user-research project into the Amplifier CLI's venv
+# and died on dependency-pin conflicts -- breaking every browser stage.
+# See AGENTS.md pitfall 9.
 #
 # scripts/run_browser_node.py's --bundle argument takes exactly this path
 # (or an `amplifier bundle add`-registered name pointing at it -- see the

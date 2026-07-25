@@ -44,9 +44,18 @@ changes need a full live round (see the verification gradient in the PR template
 3. **Wheel data**: the CLI runs from `_bundled/` data force-included in the wheel.
    If you add runtime files (pipelines/scripts/personas), add them to the
    `force-include` table in pyproject or wheel installs silently lose them.
-4. **Tool-module deps**: the Amplifier module activator uses uv's legacy pip
-   resolver — it rejects *transitive* git-URL deps. The tool module's pyproject
-   declares the full transitive git closure on purpose. Keep it in sync.
+4. **Git-dep closure — in BOTH pyprojects.** The Amplifier activator installs
+   with `uv pip install -e . --no-sources --overrides <generated>`. Those
+   generated overrides pin every already-installed git dep to a bare
+   `name==version`, *stripping the git URL*; uv's pip-compatible resolver then
+   re-resolves that package's metadata and rejects ITS git deps as
+   **transitive** URL dependencies ("Package `X` was included as a URL
+   dependency…"). So the **root** `pyproject.toml` AND
+   `modules/tool-simulated-user-research/pyproject.toml` each declare the FULL
+   transitive git closure (pipeline-runner, foundation, loop-pipeline,
+   unified-llm-client) as direct deps, even though neither imports them all.
+   Adding a git dep anywhere means adding its closure too, or L3/L4 installs
+   break. Reproduce the activator's exact command to test — don't guess.
 5. **agent-browser on Linux ARM64**: Chrome-for-Testing ships no arm64 builds;
    `agent-browser install` exits 2. Remediation lives in `doctor` and README
    (`AGENT_BROWSER_EXECUTABLE_PATH` → Playwright `headless_shell`, `--no-sandbox`).
@@ -65,6 +74,19 @@ changes need a full live round (see the verification gradient in the PR template
    in the loud failure. Generalize the lesson: any preflight check must
    validate *capability*, not presence (same class as the browser-launchability
    check). If you add a dependency on an external binary, probe what it can do.
+9. **Never let a bundle file sit where the activator can find our pyproject.toml.**
+   The Amplifier activator editable-installs the package at a bundle's
+   `base_path` — AND, for a bundle in a subdirectory, it walks UP looking for the
+   nearest `bundle.md`/`bundle.yaml` and installs that root bundle's *source root*
+   too (`registry.py:_find_nearest_bundle_file`). Either path installing THIS repo
+   into the Amplifier CLI's venv fails whenever that venv's attractor pins differ
+   from our `@main` git deps (the activator's generated `--overrides` conflict) —
+   which killed every browser stage. Hence: the browser bundle lives in the
+   package-free `bundles/` dir, and the root L3 bundle is named
+   `simulated-user-research.bundle.md` (NOT `bundle.md`) so the upward search
+   cannot discover it. If you add a bundle file, keep it out of any directory with
+   a pyproject.toml, and never reintroduce a literal `bundle.md`/`bundle.yaml` at
+   the repo root.
 
 ## Workflow
 
