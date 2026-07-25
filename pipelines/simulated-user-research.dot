@@ -214,6 +214,49 @@
 //   returns the stale spec" narrate-and-die class at the mechanism level
 //   instead of trusting the model to notice its own non-change.
 //
+// * CLICK DISCIPLINE (5th hardening cycle) -- WHY THIS EXISTS, DO NOT
+//   "SIMPLIFY" IT AWAY: a live bug-hunter investigation proved a
+//   false-positive mechanism that had already polluted THREE CONSECUTIVE
+//   ROUNDS (3, 4, 5) with fabricated CRITICAL findings -- "Rules Edit
+//   button does nothing" (round 5 even marked it REPRODUCED across 2
+//   sessions), "Hidden (N)/show never expands", and "watch toggle doesn't
+//   update on first tap." All four were verified NOT REAL. Reproduced
+//   byte-for-byte: clicking a control whose real getBoundingClientRect().y
+//   sits BELOW the viewport (e.g. y=1250 in a 720px-tall viewport) inside
+//   an internally-scrolling overlay whose scrollTop is still 0 --
+//   agent-browser reports the click as done/success, but the click never
+//   reaches the element and nothing happens; a DOM check
+//   (offsetParent === null) then "confirms" the control is broken.
+//   Scrolling the CORRECT scrollable ancestor (never "the page" -- these
+//   overlays scroll internally) to its true max FIRST makes the identical
+//   click work, first try, at every viewport width. BOTH false-positive
+//   controls sat at the BOTTOM of a scrollable panel -- that is the
+//   mechanism, not a coincidence. A second, corroborating artifact from
+//   the same investigation: `agent-browser snapshot` (the accessibility
+//   tree) has been observed NOT reflecting a genuinely-open overlay --
+//   DOM class + computed style + a screenshot all agreed a panel was open
+//   while snapshot still rendered the page underneath it -- so a single
+//   "nothing changed" signal, from ANY one source, is not proof of
+//   anything. The fix lives in scripts/run_browser_node.py's
+//   _CLICK_DISCIPLINE_BLOCK, injected verbatim into ALL THREE of
+//   build_capture_instruction, build_persona_instruction, and
+//   build_review_instruction -- every role that drives the browser gets
+//   the identical discipline: (1) scroll the element's real scrollable
+//   ancestor to its true max and confirm the bounding box is in-viewport
+//   BEFORE any click, (2) a click is never evidence by itself -- only an
+//   explicit before/after state check (DOM class, computed style, visible
+//   text, or screenshot) proves a click did or didn't do something, (3) a
+//   "control does nothing" finding requires the bounding rect + scroll
+//   position at click time, confirmation the element was in-viewport, AND
+//   at least two independent no-change signals -- absent all three, the
+//   finding must be downgraded or dropped, (4) the a11y snapshot alone is
+//   never sufficient proof an overlay/modal is closed. This is
+//   prompt-level discipline (this pipeline cannot mechanically verify a
+//   session followed it) but it is the single highest-value lever against
+//   re-introducing this exact false-positive class -- see
+//   scripts/run_browser_node.py's own module docstring ("CLICK DISCIPLINE
+//   WAS ADDED") for the full text and reasoning before touching it.
+//
 // * RETRY SUBSTRATE HARDENING: every retry-counter write below is now
 //   `&&`-guarded (write to a .tmp file, `mv` into place, and only then
 //   branch on the count) so that a FAILED counter write halts loudly

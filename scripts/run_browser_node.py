@@ -176,6 +176,49 @@ navigation refusal as capture/persona, not a weakened variant of it.
 writes is unchanged from the retired box-node prompts, so
 validate_artifact.py's `review` type contract (>= 3 "## "-level headers)
 needed no changes.
+
+
+CLICK DISCIPLINE WAS ADDED (5th hardening cycle) after a live bug-hunter
+investigation proved a false-positive mechanism that had already polluted
+THREE CONSECUTIVE ROUNDS (3, 4, 5) with fabricated CRITICAL findings --
+"Rules Edit button does nothing" (round 5: marked REPRODUCED across 2
+sessions), "Hidden (N)/show never expands", and "watch toggle doesn't
+update on first tap." All four were verified NOT REAL. The mechanism,
+reproduced byte-for-byte: clicking an element whose real
+getBoundingClientRect().y sits BELOW the viewport (e.g. y=1250 in a 720px
+viewport) inside an internally-scrolling overlay whose scrollTop is still
+0 -- agent-browser reports the click as `done`/success, but the click
+never reaches the element and nothing happens. A DOM check
+(offsetParent === null) then "confirms" the control is broken. Scroll the
+CORRECT scrollable ancestor (not "the page" -- these overlays scroll
+internally) to its true max FIRST, and the identical click works, first
+try, at every viewport width. Both false-positive controls sat at the
+BOTTOM of a scrollable panel -- that is the mechanism, not a coincidence.
+A second, corroborating artifact from the same investigation: `agent-
+browser snapshot` (the accessibility tree) has been observed NOT
+reflecting a genuinely-open overlay -- DOM class, computed style, and a
+screenshot all showed a panel open while snapshot still rendered the page
+underneath it. So a single "nothing changed" signal, from ANY one source,
+is not proof of anything.
+
+STRUCTURAL FIX, PROMPT-LEVEL: _CLICK_DISCIPLINE_BLOCK below is injected
+verbatim into all three of build_capture_instruction,
+build_persona_instruction, and build_review_instruction -- every role
+that drives the browser gets the identical discipline, not a
+per-role-diluted paraphrase. It requires (1) scrolling the element's real
+scrollable ancestor to its true max and confirming the element's bounding
+box is in-viewport BEFORE any click, (2) a before/after state check
+(never the CLI's exit status alone) as the only valid evidence a click
+did or didn't do something, (3) at least two independent no-change
+signals before a "does nothing" finding may be filed at all, and (4)
+never trusting the a11y snapshot alone for overlay/modal visibility. This
+is prompt discipline, not a mechanical check -- this script cannot verify
+a persona/reviewer actually followed it -- but making it identical,
+concrete, and non-negotiable text shared across all three builders is
+the cheapest lever available against re-introducing this exact
+false-positive class. Do not "simplify" this block away or shorten it
+per-role; every clause above exists because a specific round's fabricated
+CRITICAL traced back to skipping it.
 """
 
 from __future__ import annotations
@@ -320,6 +363,34 @@ def _stamp_header(
     return banner + response_text
 
 
+# ---------------------------------------------------------------------------
+# CLICK DISCIPLINE (5th hardening cycle -- see module docstring for the full
+# incident: rounds 3/4/5 each shipped a fabricated CRITICAL from the same
+# off-viewport-click mechanism, all four traced findings verified NOT REAL).
+# Injected verbatim into every role's instruction below -- capture, persona,
+# and review all drive the browser and are all equally exposed to this
+# failure class, so they all get the identical text, not a paraphrase.
+# ---------------------------------------------------------------------------
+_CLICK_DISCIPLINE_BLOCK = """CLICK DISCIPLINE (read before your first click -- this is the #1 cause of fabricated findings in this pipeline's history; three separate rounds shipped a CRITICAL "button does nothing" that was later proven NOT REAL, and all four traced back to skipping this):
+
+1. SCROLL BEFORE CLICK, ALWAYS. Before clicking any control, bring it into view and CONFIRM it is actually in the viewport -- do not assume `agent-browser click` will scroll for you. Overlays/panels in this class of app usually scroll INTERNALLY: scrolling "the page" does nothing if the control lives inside a scrollable div/overlay. Scroll the element's real scrollable ANCESTOR, not the page:
+   agent-browser scrollintoview "<selector>"
+   agent-browser get box "<selector>"        # confirm y is within [0, viewport height) and x within [0, viewport width) BEFORE clicking
+   If `get box` puts the element outside the viewport after scrollintoview, find and scroll the actual scrollable ancestor directly, e.g.:
+   agent-browser eval "document.querySelector('<ancestor-selector>').scrollTop = document.querySelector('<ancestor-selector>').scrollHeight"
+   Only click once the box confirms the element is on-screen.
+
+2. A CLICK IS NOT EVIDENCE -- A STATE CHANGE IS. `agent-browser click` reporting `done`/success means the CLI issued the click; it does NOT mean the click reached the element or that anything happened. After any click that should change something (open a panel, toggle a control, navigate), you MUST explicitly verify the state actually changed -- a DOM class check, a computed style check, visible text, or a screenshot -- before you treat the click as having worked. A `done`/success line from the CLI is explicitly NOT evidence of anything by itself.
+
+3. NEVER FILE A "DOES NOTHING" FINDING ON A SINGLE SIGNAL. Before writing any finding of the form "control/button does nothing" / "toggle doesn't update" / "panel never expands", your notes must be able to show ALL of:
+   (a) the element's bounding rect (agent-browser get box) AND the scroll position at the moment you clicked,
+   (b) that you confirmed the element was in-viewport before clicking (not assumed),
+   (c) at least TWO independent signals of no-change (e.g. a DOM class/attribute check AND a screenshot -- not the same check phrased twice).
+   If you cannot show all three, do not file the finding as a confirmed bug -- either downgrade it to a HYPOTHESIS/PROBE with your uncertainty stated plainly, or drop it. A finding you cannot back with (a)-(c) is exactly the shape that produced three fabricated CRITICALs in this pipeline's history.
+
+4. DO NOT TRUST THE ACCESSIBILITY SNAPSHOT ALONE FOR OVERLAY/MODAL VISIBILITY. `agent-browser snapshot` has been observed NOT reflecting a genuinely-open overlay (it rendered the page underneath while DOM class + computed style + a screenshot all agreed the overlay was open). Never conclude "the overlay didn't open" from snapshot output alone -- cross-check with a computed-style check (`agent-browser get styles`) or a screenshot first."""
+
+
 def build_capture_instruction(
     *,
     target_url: str,
@@ -350,6 +421,8 @@ Setup:
 - Target application: {target_url}
 - If the app requires a login/API key to view content, use: {api_key}
 {resume_block}
+{_CLICK_DISCIPLINE_BLOCK}
+
 Task:
 Walk the application screen-by-screen using the agent-browser CLI via bash (agent-browser open / snapshot -ic / click / fill / scroll / screenshot). Visit every primary screen or route a first-time user would encounter (onboarding, main list/feed, a detail view, settings, any consent/permission screens). For EACH screen, capture it at TWO viewport widths:
   1. Mobile: agent-browser set viewport 390 844
@@ -415,6 +488,8 @@ Setup:
 2. Open a brand-new, logged-out browser session (do not reuse any saved cookies/state): agent-browser open {target_url}
 3. If the product requires an account/API key to proceed past onboarding, use: {api_key} -- exactly as your persona would encounter it (only when the product's own flow asks for it, not before, if your persona is doing a genuine first run).
 {resume_block}
+{_CLICK_DISCIPLINE_BLOCK}
+
 Task:
 Act as this persona doing REAL first-run onboarding and the concrete tasks described in your brief. Read what's on screen the way a real person would -- don't just execute the minimum clicks to finish. Notice friction: confusing copy, unclear next steps, dead taps, missing feedback, anything that would make a real user hesitate, get lost, or quit. Also notice delights: anything that clearly worked well or exceeded expectations.
 
@@ -568,6 +643,9 @@ Setup:
     2. Desktop: agent-browser --session {session_name} set viewport 1280 900
 - Take at least one screenshot via `agent-browser --session {session_name} screenshot {screenshot_hint}` as durable proof you drove a real browser this session -- this is verified mechanically downstream.
 {resume_block}
+{_CLICK_DISCIPLINE_BLOCK}
+(Every agent-browser command in the block above -- scrollintoview, get box, eval -- must ALSO carry your `--session {session_name}` flag, exactly like every other command in this review, e.g. `agent-browser --session {session_name} get box "<selector>"`.)
+
 Task:
 {task_spec["task"]}
 
