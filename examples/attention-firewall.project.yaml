@@ -48,7 +48,7 @@ output_dir: /REPLACE_ME/path/for/round-artifacts
 app_source_hint: /REPLACE_ME/path/to/your/app
 
 # Bundle name for the single-shot browser sessions. Register once:
-#   amplifier bundle add file://<this-repo>/browser-node-agent.yaml --name simulated-user-research-browser-node
+#   amplifier bundle add file://<this-repo>/bundles/browser-node-agent.yaml --name simulated-user-research-browser-node
 browser_bundle: simulated-user-research-browser-node
 
 # LLM provider for the pipeline's own reasoning stages (needs its API key

@@ -276,7 +276,15 @@ def _check_scripts_dir(sur_repo_dir: Path) -> DoctorCheck:
 
 
 def _check_browser_bundle_yaml(sur_repo_dir: Path) -> DoctorCheck:
-    bundle_path = sur_repo_dir / "browser-node-agent.yaml"
+    """Locate bundles/browser-node-agent.yaml.
+
+    The yaml MUST live in a package-free subdirectory (`bundles/`), never
+    beside pyproject.toml: the Amplifier bundle activator editable-installs
+    whatever package sits in the bundle yaml's own directory, which for a
+    repo-root yaml meant installing this entire project into the CLI's venv
+    (and failing on dependency-pin conflicts). See AGENTS.md pitfall 9.
+    """
+    bundle_path = sur_repo_dir / "bundles" / "browser-node-agent.yaml"
     if bundle_path.is_file():
         return DoctorCheck("browser-node-agent.yaml present", True, str(bundle_path))
     return DoctorCheck(
@@ -317,7 +325,8 @@ def _check_browser_bundle_registered(browser_bundle: str) -> DoctorCheck:
         f"bundle {browser_bundle!r} registered",
         False,
         f"not found in `amplifier bundle list --all`. Register it with: "
-        f"amplifier bundle add file://<sur_repo_dir>/browser-node-agent.yaml --name {browser_bundle}",
+        f"amplifier bundle add file://<sur_repo_dir>/bundles/browser-node-agent.yaml "
+        f"--name {browser_bundle}",
     )
 
 

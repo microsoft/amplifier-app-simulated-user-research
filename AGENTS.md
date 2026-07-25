@@ -65,6 +65,19 @@ changes need a full live round (see the verification gradient in the PR template
    in the loud failure. Generalize the lesson: any preflight check must
    validate *capability*, not presence (same class as the browser-launchability
    check). If you add a dependency on an external binary, probe what it can do.
+9. **Never let a bundle file sit where the activator can find our pyproject.toml.**
+   The Amplifier activator editable-installs the package at a bundle's
+   `base_path` — AND, for a bundle in a subdirectory, it walks UP looking for the
+   nearest `bundle.md`/`bundle.yaml` and installs that root bundle's *source root*
+   too (`registry.py:_find_nearest_bundle_file`). Either path installing THIS repo
+   into the Amplifier CLI's venv fails whenever that venv's attractor pins differ
+   from our `@main` git deps (the activator's generated `--overrides` conflict) —
+   which killed every browser stage. Hence: the browser bundle lives in the
+   package-free `bundles/` dir, and the root L3 bundle is named
+   `simulated-user-research.bundle.md` (NOT `bundle.md`) so the upward search
+   cannot discover it. If you add a bundle file, keep it out of any directory with
+   a pyproject.toml, and never reintroduce a literal `bundle.md`/`bundle.yaml` at
+   the repo root.
 
 ## Workflow
 

@@ -45,7 +45,7 @@ Validation rejects the scaffold's REPLACE-ME placeholders until you edit them.
   automatically as a dependency, and the pipeline's data files (graph, scripts,
   personas) ship inside the wheel — no source checkout needed. Register the
   browser-session bundle once (the `doctor` subcommand prints the resolved yaml path):
-  `amplifier bundle add file://<path>/browser-node-agent.yaml --name simulated-user-research-browser-node`.
+  `amplifier bundle add file://<path>/bundles/browser-node-agent.yaml --name simulated-user-research-browser-node`.
 
 ## Four ways to consume it
 
@@ -78,15 +78,15 @@ result = run_round(config, on_human_gate="stop")
 print(result.run_id, result.status, result.artifacts)
 ```
 
-**Amplifier tool module** (agent-callable; `bundle.md` at repo root):
+**Amplifier tool module** (agent-callable; `simulated-user-research.bundle.md` at repo root):
 
 ```bash
-amplifier run -B file://<this-repo>/bundle.md --mode single \
+amplifier run -B file://<this-repo>/simulated-user-research.bundle.md --mode single \
   "Use the research_doctor tool and report its findings."
 # tools: research_doctor (diagnostics), run_research_round (full round)
 ```
 
-> The `file://` scheme is load-bearing — a bare path (`-B bundle.md`) is treated
+> The `file://` scheme is load-bearing — a bare path (`-B simulated-user-research.bundle.md`) is treated
 > as a registered-bundle name and will not resolve.
 
 ## What a round produces

@@ -101,7 +101,7 @@ params:
     label: "Pipeline repo root"
     description: >
       Absolute path to the amplifier-app-simulated-user-research repo root (the
-      directory containing scripts/ and browser-node-agent.yaml -- NOT the
+      directory containing scripts/ and bundles/ -- NOT the
       pipelines/ subdirectory this .dot lives in).
     required: true
   browser_bundle:
@@ -109,5 +109,6 @@ params:
     label: "Browser node bundle"
     description: >
       Bundle name or path for the single-shot browser-node sessions
-      (register browser-node-agent.yaml once as e.g. "simulated-user-research-browser-node").
+      (register bundles/browser-node-agent.yaml once as e.g.
+      "simulated-user-research-browser-node").
     required: true

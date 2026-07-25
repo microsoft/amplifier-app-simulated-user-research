@@ -24,6 +24,17 @@ Full provenance for the roadmap items: `docs/BEST-IN-CLASS-BACKLOG.md`.
   permanent environmental hazard. We defend locally instead of asking upstream
   to rename: sibling-first resolution plus an identity probe of every candidate
   (AGENTS.md pitfall 8). Revisit only if upstream namespaces its console script.
+- **The L3 root bundle still editable-installs this project into the Amplifier
+  CLI venv.** That is deliberate — the tool module imports
+  `amplifier_simulated_user_research`, and the bundle-package install is how it
+  gets there. But it inherits the same fragility that broke the browser bundle:
+  if the CLI venv holds attractor pins different from our `@main`, the activator's
+  `--overrides` make the install fail, and `-B .../simulated-user-research.bundle.md`
+  dies before any tool runs (reproduced 2026-07-24). The browser bundle is now
+  immune (it needs none of our code); the L3 path is not. Real fix when we choose
+  to take it: have `modules/tool-simulated-user-research` depend on the published
+  `amplifier-app-simulated-user-research` git URL like it already does for the
+  attractor modules, so no bundle needs the repo-root install at all.
 - **Revision cap finalizes gracefully.** Hitting the cap (3) appends a visible
   note and completes the run rather than hard-stopping — deliberate: at the cap,
   a spec-in-hand beats a dead pipeline. The human gate remains the authority.

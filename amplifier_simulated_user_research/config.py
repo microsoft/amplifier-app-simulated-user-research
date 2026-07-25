@@ -38,7 +38,7 @@ def _package_repo_root() -> Path:
     1. Source checkout: this file lives at
        <repo_root>/amplifier_simulated_user_research/config.py, so the
        grandparent directory is the repo root (contains pipelines/,
-       scripts/, personas/, browser-node-agent.yaml).
+       scripts/, personas/, bundles/).
     2. Wheel install (e.g. `uv tool install git+...`): the same files are
        shipped inside the package under `_bundled/` (see the
        force-include table in pyproject.toml), which then serves as the

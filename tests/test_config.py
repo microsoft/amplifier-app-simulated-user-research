@@ -145,6 +145,38 @@ class TestPackageRepoRoot:
 
         assert config_module._package_repo_root() == pkg / "_bundled"
 
+    def test_browser_bundle_resolves_under_bundles_subdir(self, tmp_path, monkeypatch):
+        """The browser bundle yaml lives in bundles/ -- a PACKAGE-FREE dir.
+
+        Colocating it with pyproject.toml made the Amplifier activator
+        editable-install this entire project into the CLI's venv (and die on
+        dependency-pin conflicts), breaking every browser stage. Both layouts
+        must expose it at <root>/bundles/browser-node-agent.yaml.
+        """
+        pkg = tmp_path / "site-packages" / "amplifier_simulated_user_research"
+        bundled = pkg / "_bundled"
+        (bundled / "pipelines").mkdir(parents=True)
+        (bundled / "pipelines" / "simulated-user-research.dot").write_text(
+            "digraph {}", encoding="utf-8"
+        )
+        yaml_path = bundled / "bundles" / "browser-node-agent.yaml"
+        yaml_path.parent.mkdir(parents=True)
+        yaml_path.write_text("bundle:\n  name: x\n", encoding="utf-8")
+        config_module = self._fake_config_at(monkeypatch, pkg / "config.py")
+
+        root = config_module._package_repo_root()
+        assert (root / "bundles" / "browser-node-agent.yaml").is_file()
+        # and the bundle's own directory must never contain a pyproject.toml
+        assert not (root / "bundles" / "pyproject.toml").exists()
+
+    def test_shipped_repo_layout_keeps_bundle_yaml_package_free(self):
+        """Guard the real checkout: bundles/ must stay package-free."""
+        import amplifier_simulated_user_research.config as config_module
+
+        root = config_module._package_repo_root()
+        assert (root / "bundles" / "browser-node-agent.yaml").is_file()
+        assert not (root / "bundles" / "pyproject.toml").exists()
+
     def test_returns_checkout_guess_when_neither_layout_found(
         self, tmp_path, monkeypatch
     ):
