@@ -252,132 +252,244 @@ class TestDescribeProvenance:
 
 
 class TestCheckInstalledBuildStaleness:
-    """The check that would have caught both real incidents BEFORE a round
-    ran: round 6 ran on a build predating the click-discipline fix, and a
-    later fix was merged but never reinstalled. Both are "installed build
-    differs from what's in the checkout" -- this is that comparison, run
-    against a local git checkout (never the network) so it can never block
-    a run on a hiccup it has no business failing for.
+    """The check that would have caught both real incidents BEFORE a round ran:
+    round 6 ran on a build predating the click-discipline fix, and a later fix
+    was merged, reported as shipped, and never installed. Both are "the
+    installed build differs from the checkout" -- this is that comparison.
+
+    THE INVOCATION SHAPE IS THE POINT. Rounds are launched from the workspace
+    root with `--config`, where the checkout is a DESCENDANT of the working
+    directory. A first version only walked UPWARD from the cwd, so in that
+    shape it found nothing and silently returned "undetermined" -- it would
+    have stayed quiet through both incidents it was built for. The config
+    names the checkout's absolute path; that declaration is now the source of
+    truth, and these tests pin the shape as well as the comparison.
     """
 
-    def _checkout(
+    def _tree(
         self,
         tmp_path: Path,
-        name: str = "checkout",
+        name: str,
         *,
         wrapper: str = "# wrapper v1\n",
         pipeline: str = "digraph { a -> b }\n",
         git: bool = True,
+        surfaces: bool = True,
     ) -> Path:
+        """Build a repo-shaped tree; `git`/`surfaces` control qualification."""
         root = tmp_path / name
-        for rel, content in ((WRAPPER_REL, wrapper), (PIPELINE_REL, pipeline)):
-            path = root / rel
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
+        root.mkdir(parents=True, exist_ok=True)
+        if surfaces:
+            for rel, content in ((WRAPPER_REL, wrapper), (PIPELINE_REL, pipeline)):
+                path = root / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
         if git:
             (root / ".git").mkdir()
         return root
 
-    def test_stale_when_installed_build_predates_checkout(self, tmp_path):
-        """THE incident shape: a fix landed in the checkout but the
-        installed build still has the old bytes."""
-        installed = self._checkout(
+    def _installed(self, monkeypatch, root: Path) -> None:
+        """Pin the RUNNING package's own tree -- the installed side.
+
+        Patched on the config module because check_installed_build_staleness
+        imports it at call time (`from .config import _package_repo_root`).
+        """
+        monkeypatch.setattr(
+            "amplifier_simulated_user_research.config._package_repo_root",
+            lambda: root,
+        )
+
+    # --- the config-declared source of truth (the production shape) ------
+
+    def test_warns_when_checkout_is_a_descendant_of_the_working_directory(
+        self, tmp_path, monkeypatch
+    ):
+        """THE regression. Workspace root as cwd, checkout nested below it,
+        config naming the checkout's absolute path. The upward walk cannot
+        reach a descendant -- only the config's declaration can."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / ".git").mkdir()  # workspace is its own repo, without surfaces
+        checkout = self._tree(
+            workspace,
+            "amplifier-app-simulated-user-research",
+            wrapper="# wrapper WITH the fix\n",
+        )
+        installed = self._tree(
             tmp_path, "installed", wrapper="# wrapper WITHOUT the fix\n", git=False
         )
-        checkout = self._checkout(
-            tmp_path, "dev-checkout", wrapper="# wrapper WITH the fix\n"
+        self._installed(monkeypatch, installed)
+
+        result = check_installed_build_staleness(
+            _config(checkout),
+            start=workspace,  # cwd = workspace root
         )
 
-        result = check_installed_build_staleness(_config(installed), start=checkout)
-
         assert result.status == "stale"
+        assert result.checkout_source == "config sur_repo_dir"
         assert result.checkout_path == str(checkout)
         assert len(result.differences) == 1
         assert "wrapper_sha256" in result.differences[0]
 
-    def test_silent_when_installed_build_matches_checkout(self, tmp_path):
-        installed = self._checkout(tmp_path, "installed", git=False)
-        checkout = self._checkout(tmp_path, "dev-checkout")
-        # Same content in both -- a real reinstall picked up the checkout.
-        (checkout / WRAPPER_REL).write_bytes((installed / WRAPPER_REL).read_bytes())
-        (checkout / PIPELINE_REL).write_bytes((installed / PIPELINE_REL).read_bytes())
+    def test_silent_when_config_declared_checkout_matches_installed(
+        self, tmp_path, monkeypatch
+    ):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        checkout = self._tree(workspace, "checkout")
+        installed = self._tree(tmp_path, "installed", git=False)
+        self._installed(monkeypatch, installed)
 
-        result = check_installed_build_staleness(_config(installed), start=checkout)
+        result = check_installed_build_staleness(_config(checkout), start=workspace)
 
         assert result.status == "current"
+        assert result.checkout_source == "config sur_repo_dir"
         assert result.differences == ()
 
-    def test_undetermined_when_no_checkout_discoverable(self, tmp_path):
-        """No local git checkout nearby (the common `uv tool install` case)
-        -- honest 'cannot verify', never a fabricated 'current'."""
-        installed = self._checkout(tmp_path, "installed", git=False)
-        nowhere = tmp_path / "somewhere" / "unrelated" / "empty"
-        nowhere.mkdir(parents=True)
+    def test_config_declaration_beats_an_ancestor_checkout(self, tmp_path, monkeypatch):
+        """When both exist, the operator's declaration wins -- they said
+        which checkout this run belongs to."""
+        ancestor = self._tree(tmp_path, "ancestor-checkout")
+        declared = self._tree(tmp_path, "declared-checkout")
+        nested = ancestor / "nested"
+        nested.mkdir()
+        self._installed(monkeypatch, self._tree(tmp_path, "installed", git=False))
 
-        result = check_installed_build_staleness(_config(installed), start=nowhere)
+        result = check_installed_build_staleness(_config(declared), start=nested)
+
+        assert result.checkout_path == str(declared)
+        assert result.checkout_source == "config sur_repo_dir"
+
+    def test_declared_dir_without_git_marker_is_undetermined(
+        self, tmp_path, monkeypatch
+    ):
+        """A plain copy of the two files (e.g. another installed build's
+        bundled tree) must not masquerade as a checkout."""
+        not_a_checkout = self._tree(tmp_path, "copy", git=False)
+        self._installed(monkeypatch, self._tree(tmp_path, "installed", git=False))
+
+        result = check_installed_build_staleness(
+            _config(not_a_checkout), start=tmp_path
+        )
+
+        assert result.status == "undetermined"
+        assert result.checkout_path is None
+        assert result.checkout_source is None
+        assert "not a git checkout" in result.detail
+
+    def test_declared_dir_missing_surfaces_is_undetermined(self, tmp_path, monkeypatch):
+        empty_repo = self._tree(tmp_path, "empty-repo", surfaces=False)
+        self._installed(monkeypatch, self._tree(tmp_path, "installed", git=False))
+
+        result = check_installed_build_staleness(_config(empty_repo), start=tmp_path)
+
+        assert result.status == "undetermined"
+
+    def test_nonqualifying_declaration_does_not_fall_back_to_the_walk(
+        self, tmp_path, monkeypatch
+    ):
+        """A real checkout sits up the tree from cwd, but the operator
+        declared a different (non-qualifying) directory. Grading against
+        the ancestor would be a confident verdict about the WRONG repo."""
+        ancestor = self._tree(tmp_path, "some-other-checkout")
+        nested = ancestor / "nested"
+        nested.mkdir()
+        declared = self._tree(tmp_path, "declared-but-not-a-repo", git=False)
+        self._installed(monkeypatch, self._tree(tmp_path, "installed", git=False))
+
+        result = check_installed_build_staleness(_config(declared), start=nested)
+
+        assert result.status == "undetermined"
+        assert result.checkout_path is None
+
+    # --- the upward walk (no config / no declaration) --------------------
+
+    def test_walk_is_used_when_no_config_is_supplied(self, tmp_path, monkeypatch):
+        checkout = self._tree(tmp_path, "checkout", wrapper="# fixed\n")
+        self._installed(monkeypatch, self._tree(tmp_path, "installed", git=False))
+
+        result = check_installed_build_staleness(None, start=checkout)
+
+        assert result.status == "stale"
+        assert result.checkout_source == "directory walk"
+
+    def test_walk_is_used_when_config_declares_no_repo_dir(self, tmp_path, monkeypatch):
+        checkout = self._tree(tmp_path, "checkout", wrapper="# fixed\n")
+        self._installed(monkeypatch, self._tree(tmp_path, "installed", git=False))
+
+        result = check_installed_build_staleness(_config(None), start=checkout)
+
+        assert result.checkout_source == "directory walk"
+        assert result.checkout_path == str(checkout)
+
+    def test_walk_climbs_from_a_nested_start(self, tmp_path, monkeypatch):
+        checkout = self._tree(tmp_path, "checkout")
+        nested = checkout / "some" / "nested" / "dir"
+        nested.mkdir(parents=True)
+        self._installed(monkeypatch, self._tree(tmp_path, "installed", git=False))
+
+        result = check_installed_build_staleness(None, start=nested)
+
+        assert result.checkout_path == str(checkout)
+
+    def test_walk_ignores_a_copy_without_a_git_marker(self, tmp_path, monkeypatch):
+        plain_copy = self._tree(tmp_path, "plain-copy", git=False)
+        self._installed(monkeypatch, self._tree(tmp_path, "installed", git=False))
+
+        result = check_installed_build_staleness(None, start=plain_copy)
+
+        assert result.status == "undetermined"
+
+    # --- honest non-answers ----------------------------------------------
+
+    def test_undetermined_when_neither_declaration_nor_walk_yields_a_checkout(
+        self, tmp_path, monkeypatch
+    ):
+        """The common plain `uv tool install` case -- never a fabricated
+        'current'."""
+        nowhere = tmp_path / "somewhere" / "unrelated"
+        nowhere.mkdir(parents=True)
+        self._installed(monkeypatch, self._tree(tmp_path, "installed", git=False))
+
+        result = check_installed_build_staleness(None, start=nowhere)
 
         assert result.status == "undetermined"
         assert result.checkout_path is None
         assert result.differences == ()
         assert "uv tool install" in result.detail
 
-    def test_current_when_running_directly_from_the_checkout(self, tmp_path):
-        """Dev mode: the installed root IS the discovered checkout (e.g.
-        `uv run` from inside a source tree, or sur_repo_dir points at it).
-        Trivially current -- there is nothing to be stale relative to."""
-        checkout = self._checkout(tmp_path, "checkout")
+    def test_unresolvable_package_root_degrades_without_crashing(
+        self, tmp_path, monkeypatch
+    ):
+        checkout = self._tree(tmp_path, "checkout")
+        monkeypatch.setattr(
+            "amplifier_simulated_user_research.config._package_repo_root",
+            lambda: (_ for _ in ()).throw(OSError("boom")),
+        )
+
+        result = check_installed_build_staleness(_config(checkout), start=checkout)
+
+        assert result.status == "undetermined"
+
+    def test_current_when_installed_build_is_the_checkout(self, tmp_path, monkeypatch):
+        """Dev mode (`uv run` from inside a source tree): the running
+        package's tree IS the declared checkout -- nothing to be stale
+        relative to."""
+        checkout = self._tree(tmp_path, "checkout")
+        self._installed(monkeypatch, checkout)
 
         result = check_installed_build_staleness(_config(checkout), start=checkout)
 
         assert result.status == "current"
-        assert result.checkout_path == str(checkout)
         assert "running directly from the checkout" in result.detail
 
-    def test_a_copy_without_git_is_not_mistaken_for_a_checkout(self, tmp_path):
-        """A directory with the same two files but no `.git` (e.g. another
-        installed build's bundled tree sitting on disk) must not be treated
-        as a development checkout -- only `.git` marks intent."""
-        installed = self._checkout(tmp_path, "installed", git=False)
-        plain_copy = self._checkout(tmp_path, "plain-copy", git=False)
+    def test_compares_only_the_two_prompt_surfaces(self, tmp_path, monkeypatch):
+        """No opinion on tool_version or engine resolution -- that
+        comparison belongs to provenance_differences at triage time."""
+        checkout = self._tree(tmp_path, "checkout", wrapper="# fixed\n")
+        self._installed(monkeypatch, self._tree(tmp_path, "installed", git=False))
 
-        result = check_installed_build_staleness(_config(installed), start=plain_copy)
-
-        assert result.status == "undetermined"
-
-    def test_search_walks_upward_from_a_nested_start(self, tmp_path):
-        installed = self._checkout(tmp_path, "installed", git=False)
-        checkout = self._checkout(tmp_path, "dev-checkout")
-        nested = checkout / "some" / "nested" / "working" / "dir"
-        nested.mkdir(parents=True)
-
-        result = check_installed_build_staleness(_config(installed), start=nested)
-
-        assert result.checkout_path == str(checkout)
-
-    def test_missing_repo_root_degrades_to_undetermined_not_a_crash(
-        self, tmp_path, monkeypatch
-    ):
-        config = _config(self._checkout(tmp_path, "installed", git=False))
-        monkeypatch.setattr(
-            type(config),
-            "resolved_sur_repo_dir",
-            lambda self: (_ for _ in ()).throw(OSError("boom")),
-        )
-
-        result = check_installed_build_staleness(config, start=tmp_path)
-
-        assert result.status == "undetermined"
-
-    def test_never_flags_engine_fields_or_tool_version(self, tmp_path):
-        """This check is about the two prompt-shaping file surfaces only --
-        it has no opinion on tool_version or engine resolution (that
-        comparison belongs to provenance_differences at triage time)."""
-        installed = self._checkout(tmp_path, "installed", git=False)
-        checkout = self._checkout(
-            tmp_path, "dev-checkout", wrapper="# wrapper WITH the fix\n"
-        )
-
-        result = check_installed_build_staleness(_config(installed), start=checkout)
+        result = check_installed_build_staleness(_config(checkout), start=tmp_path)
 
         assert "tool_version" not in result.detail
         assert "engine_path" not in result.detail

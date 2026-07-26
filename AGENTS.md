@@ -110,12 +110,29 @@ changes need a full live round (see the verification gradient in the PR template
     half the loop: it explains a round's findings *after* the fact. The other half —
     `provenance.check_installed_build_staleness` + `doctor`'s "installed build
     current" check + `run`'s pre-flight warning — compares the installed build's
-    hashed surfaces against a local git checkout discovered by walking up from cwd
-    (never the network: cheap, honest, and it can't fail a run over an unrelated
-    network hiccup). No nearby checkout is the common, non-actionable case
-    ("undetermined") and must stay silent, not warn — a check that fires on every
-    normal install trains people to ignore it. Warns, never blocks: the operator may
-    be auditing an old build on purpose.
+    hashed surfaces against a local git checkout (never the network: cheap, honest,
+    and it can't fail a run over an unrelated hiccup). "Undetermined" is the
+    common, non-actionable case and must stay silent, not warn — a check that fires
+    on every normal install trains people to ignore it. Warns, never blocks: the
+    operator may be auditing an old build on purpose. Note the limit, and don't
+    overread a "current": it compares the two prompt-shaping surfaces, so a
+    Python-only change to this package is invisible to it.
+12. **A guard that only fires when run from inside the checkout is not a guard —
+    this tool is operated from somewhere else.** The first version of #11 found its
+    comparison target by walking UP from the working directory. It passed its tests
+    and a live demo, both run from inside the repo. In production it returned
+    `undetermined` on *every* real invocation and would have stayed silent through
+    both incidents it was built for: rounds are launched from the **workspace root**
+    with `--config`, where the checkout is a *descendant* of the cwd, so an upward
+    walk can never reach it — while `sur_repo_dir` in the config had named its
+    absolute path the whole time. An operator's explicit declaration beats any
+    search heuristic, so `sur_repo_dir` is now the source of truth; the walk is only
+    the no-config fallback; and a declared-but-non-qualifying directory yields
+    `undetermined` rather than silently grading against some other checkout up the
+    tree. Generalize: **verify a guard in the invocation shape the operator actually
+    uses** — cwd, flags, and config together — not the shape that is convenient to
+    test from. Same family as pitfall #8 (presence ≠ identity): a check that cannot
+    fire is indistinguishable from a check that passes.
 
 ## Workflow
 

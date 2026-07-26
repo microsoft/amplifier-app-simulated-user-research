@@ -148,6 +148,7 @@ class TestRunWarnsOnStaleInstalledBuild:
             StalenessResult(
                 "stale",
                 "/home/u/dev/checkout",
+                "config sur_repo_dir",
                 ("wrapper_sha256: installed=aaa checkout=bbb",),
                 "installed build differs from the checkout at "
                 "/home/u/dev/checkout (wrapper_sha256: installed=aaa "
@@ -171,7 +172,13 @@ class TestRunWarnsOnStaleInstalledBuild:
         self._patch_run_round(monkeypatch, tmp_path)
         self._stub_staleness(
             monkeypatch,
-            StalenessResult("current", str(tmp_path), (), "matches the checkout"),
+            StalenessResult(
+                "current",
+                str(tmp_path),
+                "config sur_repo_dir",
+                (),
+                "matches the checkout",
+            ),
         )
 
         rc = main(["run", "--config", str(config_path)])
@@ -190,7 +197,7 @@ class TestRunWarnsOnStaleInstalledBuild:
         self._stub_staleness(
             monkeypatch,
             StalenessResult(
-                "undetermined", None, (), "no local git checkout found nearby"
+                "undetermined", None, None, (), "no local git checkout found nearby"
             ),
         )
 
