@@ -108,6 +108,50 @@
 //   structurally guarantees they never overlap. No extra locking needed —
 //   this IS the structural fix the design asked for.
 //
+// * SECOND SESSION-ISOLATION INCIDENT (6th hardening cycle) — SHARED-DAEMON
+//   COLLISIONS COME FROM OTHER PROCESSES, NOT JUST OUR OWN CONCURRENCY:
+//   round 7 produced a fabricated CRITICAL — "App navigates away to an
+//   unrelated page on primary card click" — reporting the app under test
+//   jumped to `http://localhost:8899/cortex-v1-mockup.html`. A bug-hunter
+//   proved this was NOT a defect in the app: that URL/domain appear nowhere
+//   in its source, and a clean isolated re-test showed
+//   `window.location.href` unchanged with the card correctly opening its
+//   detail rail. Actual cause: an UNRELATED CONCURRENT PROCESS on this
+//   shared dev box issued bare `agent-browser open`/`click` commands (no
+//   `--session` flag) against agent-browser's UNNAMED DEFAULT SESSION —
+//   a single shared daemon per machine, per agent-browser's own docs — and
+//   those actions landed in the same tab capture_screens/personaN's session
+//   was driving. The mockup file genuinely exists elsewhere on this
+//   machine; port 8899 is a long-running demo server from other,
+//   unrelated work on that box.
+//
+//   The 4th hardening cycle already hardened this exact class of collision
+//   for review_ia/review_responsive (see the CONCURRENT-BROWSER CAVEAT
+//   comment on parallel_reviews below) by giving each review its own named
+//   `--session review-{ia,responsive}` — but that fix only protects
+//   concurrent reviews from COLLIDING WITH EACH OTHER. capture_screens and
+//   the persona nodes were left on the unnamed default session because,
+//   within THIS pipeline, they run strictly sequentially (see SEQUENTIAL
+//   PERSONAS above) — which rules out self-collision but NOT a foreign
+//   process on a shared machine. Worse, their setup/cleanup instructions
+//   told them to run `agent-browser close --all`, which on a shared daemon
+//   would also kill a browser some unrelated process on the box was using.
+//
+//   FIX (scripts/run_browser_node.py, 6th hardening cycle): capture and
+//   every persona role now get their own dedicated named session too —
+//   `--session capture` for capture_screens, `--session persona-<name>`
+//   (e.g. `persona-marisol`) per persona, distinct enough to stay unique
+//   when three personas run in the same round and human-legible in a log —
+//   mirroring the pattern already established for reviews. Every
+//   agent-browser command in those prompts now carries `--session`, and
+//   `close --all` is banned from their prompt text (session-scoped close
+//   only). See run_browser_node.py's module docstring, "NAMED SESSIONS FOR
+//   CAPTURE/PERSONA WAS ADDED", and build_capture_instruction's /
+//   build_persona_instruction's own docstrings, for the full mechanism.
+//   The browser-ran proof counting regex (_AB_FLAG_RE) already tolerated
+//   `--session <name>`-prefixed commands for ANY role since the 4th cycle's
+//   review fix — no counting-logic change was needed, only the prompt text.
+//
 // * FILES ARE THE CONTRACT: every stage reads/writes real files under
 //   $output_dir. Nothing depends on LLM context carrying prior conversation
 //   forward (every LLM node below uses fidelity="truncate" — fresh session,
