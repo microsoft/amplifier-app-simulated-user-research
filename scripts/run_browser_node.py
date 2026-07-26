@@ -219,6 +219,57 @@ the cheapest lever available against re-introducing this exact
 false-positive class. Do not "simplify" this block away or shorten it
 per-role; every clause above exists because a specific round's fabricated
 CRITICAL traced back to skipping it.
+
+
+NAMED SESSIONS FOR CAPTURE/PERSONA WAS ADDED (6th hardening cycle) after
+round 7 produced a CRITICAL finding -- "App navigates away to an
+unrelated page on primary card click" -- reporting that the app under
+test jumped to `http://localhost:8899/cortex-v1-mockup.html`. A
+bug-hunter proved this was NOT a defect in the app under test: that URL
+and domain appear nowhere in the app's source, and a clean isolated
+re-test showed `window.location.href` unchanged with the card correctly
+opening its detail rail. What actually happened: an UNRELATED CONCURRENT
+PROCESS on the same shared dev box issued bare `agent-browser
+open`/`click` commands (no `--session` flag) against agent-browser's
+UNNAMED DEFAULT SESSION -- which agent-browser's own docs describe as a
+single shared daemon per machine -- and those actions landed in the same
+tab our capture/persona session was driving. The mockup file genuinely
+exists elsewhere on this machine and port 8899 is a long-running demo
+server from other, unrelated work on that box.
+
+This is the SAME underlying mechanism the 4th hardening cycle already
+fixed for review_ia/review_responsive (see build_review_instruction's
+"NAMED SESSION, NOT THE SHARED DEFAULT" docstring note below) -- but that
+fix only protected reviews against COLLIDING WITH EACH OTHER (both
+running concurrently, in this pipeline, via shape=component). capture
+and persona were left on the unnamed default session because within
+THIS pipeline they run strictly sequentially (see the .dot's "SEQUENTIAL
+PERSONAS" note) -- which structurally rules out self-collision, but does
+NOT rule out a FOREIGN process on a shared machine also driving the
+unnamed default session at the same time. Worse, their setup/cleanup
+instructions told them to run `agent-browser close --all`, which on a
+shared daemon would ALSO have killed a browser some other, unrelated
+process on the box was using.
+
+STRUCTURAL FIX: build_capture_instruction and build_persona_instruction
+now each pin every agent-browser invocation to their own dedicated named
+session (`--session capture` for capture; `--session persona-<name>` for
+each persona, e.g. `persona-marisol` -- distinct per persona so three
+personas running in the same round never collide with each other
+either, and human-legible in a log), exactly mirroring the pattern
+build_review_instruction already established. `close --all` is banned
+from both prompts' text (setup and cleanup both use the session-scoped
+`agent-browser --session <name> close` instead) -- see each builder's
+own docstring for the session-name convention. This does not change the
+SEQUENTIAL-PERSONAS structural guarantee (still true, still relevant --
+it is what rules out THIS pipeline's own stages colliding with EACH
+OTHER); it adds protection against a DIFFERENT, previously-unguarded
+threat: some OTHER process on the same machine, entirely outside this
+pipeline's control, sharing agent-browser's one unnamed default session.
+See _AB_FLAG_RE's own comment (this file) for why the browser-ran proof
+counting regex already handles `--session <name>`-prefixed commands
+correctly for ANY role, not just review -- no counting-logic change was
+needed for this fix, only the prompt text.
 """
 
 from __future__ import annotations
@@ -398,6 +449,26 @@ def build_capture_instruction(
     output_dir: str,
     existing_content: str | None,
 ) -> str:
+    """Build the single-shot instruction for the visual-capture role.
+
+    NAMED SESSION, NOT THE SHARED DEFAULT (6th hardening cycle -- see this
+    module's docstring, "NAMED SESSIONS FOR CAPTURE/PERSONA WAS ADDED", for
+    the full round-7 incident this fixes): every agent-browser invocation
+    below is pinned to `--session capture` rather than agent-browser's
+    unnamed default session. agent-browser's default session is a SINGLE
+    SHARED DAEMON PER MACHINE -- some OTHER, unrelated process on this same
+    shared dev box driving the default session would silently land its own
+    navigations/clicks in the same tab this capture session is using (this
+    is exactly what produced round 7's fabricated CRITICAL: a foreign
+    process's `agent-browser open http://localhost:8899/cortex-v1-mockup.html`
+    landed in this session's tab and was misread as the app under test
+    navigating away). Cleanup uses `agent-browser --session capture close`
+    (session-scoped), NEVER `close --all` -- `close --all` tears down EVERY
+    session on the machine, which could kill some unrelated process's
+    in-flight browser, not just this session's own.
+    """
+    session_name = "capture"
+
     resume_block = ""
     if existing_content:
         resume_block = (
@@ -416,23 +487,26 @@ How this works: you have real bash access (agent-browser CLI) and can browse the
 
 EVIDENCE DISCIPLINE (this run is audited): every observation in this report is [OBSERVED] -- something you personally saw in a real browser against a real instance this session. There is no persona judgment in this stage, only direct observation. Do not write a partial screen list and label the rest "to be completed" or "(in progress)" -- an incomplete walkthrough is a failed session that will be rejected and retried, not a partial pass. If you are running low on turns, prioritize finishing EVERY screen at a lower level of detail over doing a few screens exhaustively and leaving the rest unwritten.
 
+CRITICAL -- ISOLATED BROWSER SESSION: this machine may be shared with OTHER, unrelated processes also driving agent-browser at the same time. You MUST prefix every single agent-browser command with `--session {session_name}` (e.g. `agent-browser --session {session_name} open ...`). NEVER run a bare `agent-browser` command with no `--session` flag, and NEVER run `agent-browser close --all` -- that closes every session on the machine, including a browser some unrelated process may be using. Use ONLY `agent-browser --session {session_name} close` to end your own session.
+
 Setup:
-- As your first action, run: agent-browser close --all   (clears any stale browser daemon from a prior crashed run; harmless if nothing was running)
+- As your first action, run: agent-browser --session {session_name} close   (clears any stale state from a prior crashed run at THIS stage; harmless if nothing was running; scoped to your own session only)
 - Target application: {target_url}
 - If the app requires a login/API key to view content, use: {api_key}
 {resume_block}
 {_CLICK_DISCIPLINE_BLOCK}
+(Every agent-browser command in the block above -- scrollintoview, get box, eval -- must ALSO carry your `--session {session_name}` flag, exactly like every other command in this task, e.g. `agent-browser --session {session_name} get box "<selector>"`.)
 
 Task:
-Walk the application screen-by-screen using the agent-browser CLI via bash (agent-browser open / snapshot -ic / click / fill / scroll / screenshot). Visit every primary screen or route a first-time user would encounter (onboarding, main list/feed, a detail view, settings, any consent/permission screens). For EACH screen, capture it at TWO viewport widths:
-  1. Mobile: agent-browser set viewport 390 844
-  2. Desktop: agent-browser set viewport 1280 900
+Walk the application screen-by-screen using the agent-browser CLI via bash (agent-browser --session {session_name} open / snapshot -ic / click / fill / scroll / screenshot). Visit every primary screen or route a first-time user would encounter (onboarding, main list/feed, a detail view, settings, any consent/permission screens). For EACH screen, capture it at TWO viewport widths:
+  1. Mobile: agent-browser --session {session_name} set viewport 390 844
+  2. Desktop: agent-browser --session {session_name} set viewport 1280 900
 
 Save every screenshot into {output_dir}/screens/ with descriptive, sequential filenames, e.g. screens/01-onboarding-mobile.png, screens/01-onboarding-desktop.png, screens/02-main-feed-mobile.png. Zero-pad the sequence number. Create {output_dir}/screens/ if it does not exist. Capture at least 4 distinct screens at both viewports (8+ files total) -- this is verified mechanically downstream, not optional.
 
 While you go, keep a running list of anything that looks broken, confusing, or unfinished: layout breaks, overlapping elements, dead taps, missing loading states, text truncation, or anything a real user would notice as a bug. This is NOT a persona simulation -- just an honest, first-pass visual and functional walkthrough note. Every bug you note must reference the specific screenshot filename where it's visible -- cite it as `screens/<filename>` (the same relative path you saved it to, e.g. `screens/01-onboarding-mobile.png`), not a bare filename with no path -- this is how the report is checked against what's actually on disk.
 
-When finished, run agent-browser close to end the browser session cleanly -- REQUIRED, later stages assume no browser daemon is left running.
+When finished, run `agent-browser --session {session_name} close` to end YOUR browser session cleanly -- REQUIRED, but scoped to your own session only (never `close --all`).
 
 Your FINAL reply must be the complete report with these exact sections (this text is what gets saved -- there is no other save step; a provenance banner and Run ID are added automatically, you do not need to write them):
   ## Screens Captured
@@ -452,6 +526,31 @@ def build_persona_instruction(
     persona_brief: str,
     existing_content: str | None,
 ) -> str:
+    """Build the single-shot instruction for a persona-session role.
+
+    NAMED SESSION, NOT THE SHARED DEFAULT (6th hardening cycle -- see this
+    module's docstring, "NAMED SESSIONS FOR CAPTURE/PERSONA WAS ADDED", for
+    the full round-7 incident this fixes): every agent-browser invocation
+    below is pinned to `--session persona-{persona_name}` (e.g.
+    `persona-marisol`) rather than agent-browser's unnamed default session.
+    Distinct per persona name so three personas run in the same round (this
+    pipeline's own persona chain, STAGE 4) never share a session with each
+    other either, and so a human reading a log can tell at a glance which
+    persona's browser a given command belongs to. agent-browser's default
+    session is a SINGLE SHARED DAEMON PER MACHINE -- some OTHER, unrelated
+    process on this same shared dev box driving the default session would
+    silently land its own navigations/clicks in the same tab this persona
+    session is using (this is exactly what produced round 7's fabricated
+    CRITICAL: a foreign process's `agent-browser open
+    http://localhost:8899/cortex-v1-mockup.html` landed in this session's
+    tab and was misread as the app under test navigating away). Cleanup uses
+    `agent-browser --session persona-{persona_name} close` (session-scoped),
+    NEVER `close --all` -- `close --all` tears down EVERY session on the
+    machine, which could kill some unrelated process's in-flight browser,
+    not just this session's own.
+    """
+    session_name = f"persona-{persona_name}"
+
     resume_block = ""
     if existing_content:
         resume_block = (
@@ -476,24 +575,27 @@ EVIDENCE DISCIPLINE (this run is audited -- read carefully, it changes how you t
 - If your persona brief SCRIPTED a specific task for you to do this session (e.g. "trigger the learn-from-feedback feature", "ask one pointed trap question", "edit the rules directly") and you did that scripted thing and it produced a finding, tag that finding `PROBE (scripted in brief):` in your report. Reporting a scripted probe as if it were a spontaneous discovery is dishonest even when the underlying bug is real -- name it as what it is.
 - Any severity you assign must be justified by the PRODUCT'S OWN stated promise or observed behavior (e.g. copy that claims X while the UI does Y) -- never by your persona's personal preferences or backstory alone.
 - Any claim about how a REAL human user (not you, a simulated persona) would react to this product must be marked `HYPOTHESIS:` -- you are one LLM in one costume for one session, not a study of real users.
-- As part of this session, take at least one screenshot via `agent-browser screenshot {screenshot_hint}` at the moment that most shaped your verdict -- this is a durable, independently-checkable proof that you drove a real browser this session, not just a chat transcript. This is verified mechanically downstream.
+- As part of this session, take at least one screenshot via `agent-browser --session {session_name} screenshot {screenshot_hint}` at the moment that most shaped your verdict -- this is a durable, independently-checkable proof that you drove a real browser this session, not just a chat transcript. This is verified mechanically downstream.
 
 Your persona brief (this defines who you are, your goals, your technical comfort level, and what would make you say yes or no to this product -- adopt this persona fully for the rest of the session; do not break character in your actions or your written log):
 ----- BEGIN PERSONA BRIEF -----
 {persona_brief}
 ----- END PERSONA BRIEF -----
 
+CRITICAL -- ISOLATED BROWSER SESSION: this machine may be shared with OTHER, unrelated processes also driving agent-browser at the same time. You MUST prefix every single agent-browser command with `--session {session_name}` (e.g. `agent-browser --session {session_name} open ...`). NEVER run a bare `agent-browser` command with no `--session` flag, and NEVER run `agent-browser close --all` -- that closes every session on the machine, including a browser some unrelated process may be using. Use ONLY `agent-browser --session {session_name} close` to end your own session.
+
 Setup:
-1. As your first action, run: agent-browser close --all  (clears any stale browser daemon; harmless if none running -- REQUIRED, since persona sessions run one at a time and must never overlap another session's browser state)
-2. Open a brand-new, logged-out browser session (do not reuse any saved cookies/state): agent-browser open {target_url}
+1. As your first action, run: agent-browser --session {session_name} close  (clears any stale state from a prior crashed attempt at THIS persona; harmless if none running; scoped to your own session only)
+2. Open a brand-new, logged-out browser session (do not reuse any saved cookies/state): agent-browser --session {session_name} open {target_url}
 3. If the product requires an account/API key to proceed past onboarding, use: {api_key} -- exactly as your persona would encounter it (only when the product's own flow asks for it, not before, if your persona is doing a genuine first run).
 {resume_block}
 {_CLICK_DISCIPLINE_BLOCK}
+(Every agent-browser command in the block above -- scrollintoview, get box, eval -- must ALSO carry your `--session {session_name}` flag, exactly like every other command in this task, e.g. `agent-browser --session {session_name} get box "<selector>"`.)
 
 Task:
 Act as this persona doing REAL first-run onboarding and the concrete tasks described in your brief. Read what's on screen the way a real person would -- don't just execute the minimum clicks to finish. Notice friction: confusing copy, unclear next steps, dead taps, missing feedback, anything that would make a real user hesitate, get lost, or quit. Also notice delights: anything that clearly worked well or exceeded expectations.
 
-When finished, close your browser: agent-browser close
+When finished, run `agent-browser --session {session_name} close` to end YOUR browser session cleanly -- REQUIRED, but scoped to your own session only (never `close --all`).
 
 Your FINAL reply must be the complete friction log with these exact sections, in this exact order (this text is what gets saved -- there is no other save step; a provenance banner and Run ID are added automatically, you do not need to write them -- just start with your own H1):
   # <your persona's name> -- Session Report

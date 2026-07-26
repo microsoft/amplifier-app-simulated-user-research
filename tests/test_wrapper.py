@@ -421,6 +421,170 @@ class TestReviewRole:
         assert "invalid choice" in proc.stderr
 
 
+class TestNamedSessionCaptureAndPersona:
+    """6th hardening cycle: capture and persona now get their own dedicated
+    named session, mirroring build_review_instruction's pattern, after
+    round 7's fabricated CRITICAL (an unrelated concurrent process on a
+    shared dev box drove agent-browser's unnamed default session and
+    landed a navigation in capture/persona's own tab). See
+    run_browser_node.py's module docstring, "NAMED SESSIONS FOR
+    CAPTURE/PERSONA WAS ADDED", for the full incident."""
+
+    # Matches the same subset build_review_instruction's own golden test
+    # checks (open|close|set|screenshot) -- deliberately excludes
+    # scrollintoview/get/eval, which live in the shared
+    # _CLICK_DISCIPLINE_BLOCK using generic placeholder selectors and are
+    # covered instead by the prose immediately following that block (see
+    # each builder's own docstring/prompt text).
+    _COMMAND_RE = re.compile(
+        r"agent-browser\s+(?:--\S+(?:\s+\S+)?\s+)*" r"(?:open|close|set|screenshot)\b"
+    )
+
+    def test_capture_every_agent_browser_command_is_session_scoped(self):
+        wrapper = _load_wrapper_module()
+        instruction = wrapper.build_capture_instruction(
+            target_url="http://x",
+            api_key="key",
+            output_dir="/tmp/out",
+            existing_content=None,
+        )
+        agent_browser_lines = [
+            line for line in instruction.splitlines() if self._COMMAND_RE.search(line)
+        ]
+        assert agent_browser_lines, "expected agent-browser commands in the prompt"
+        for line in agent_browser_lines:
+            assert "--session capture" in line, line
+        # The prose is allowed to WARN against `close --all` exactly once
+        # (e.g. "NEVER run `agent-browser close --all`") -- it must not
+        # appear anywhere else (i.e. as an actual instruction to run it).
+        occurrences = [
+            m.start() for m in re.finditer(r"agent-browser close --all", instruction)
+        ]
+        assert len(occurrences) == 1, occurrences
+        warning_context = instruction[max(0, occurrences[0] - 20) : occurrences[0]]
+        assert "NEVER run" in warning_context, warning_context
+
+    def test_persona_every_agent_browser_command_is_session_scoped(self):
+        wrapper = _load_wrapper_module()
+        instruction = wrapper.build_persona_instruction(
+            target_url="http://x",
+            api_key="key",
+            output_dir="/tmp/out",
+            persona_name="marisol",
+            persona_brief="brief body",
+            existing_content=None,
+        )
+        agent_browser_lines = [
+            line for line in instruction.splitlines() if self._COMMAND_RE.search(line)
+        ]
+        assert agent_browser_lines, "expected agent-browser commands in the prompt"
+        for line in agent_browser_lines:
+            assert "--session persona-marisol" in line, line
+        # Same "warn exactly once, never instruct" contract as capture's own
+        # test above -- see that test's comment for the reasoning.
+        occurrences = [
+            m.start() for m in re.finditer(r"agent-browser close --all", instruction)
+        ]
+        assert len(occurrences) == 1, occurrences
+        warning_context = instruction[max(0, occurrences[0] - 20) : occurrences[0]]
+        assert "NEVER run" in warning_context, warning_context
+
+    def test_persona_session_name_is_unique_per_persona(self):
+        """Three personas running in the same round (this pipeline's own
+        sequential persona chain, STAGE 4) must never share a session name
+        with each other -- distinct enough to stay unique, human-legible
+        in a log."""
+        wrapper = _load_wrapper_module()
+        names = set()
+        for persona_name in ("marisol", "devon", "priya"):
+            instruction = wrapper.build_persona_instruction(
+                target_url="http://x",
+                api_key="key",
+                output_dir="/tmp/out",
+                persona_name=persona_name,
+                persona_brief="brief",
+                existing_content=None,
+            )
+            assert f"--session persona-{persona_name}" in instruction
+            names.add(f"persona-{persona_name}")
+        assert len(names) == 3
+
+    def test_capture_role_trace_with_named_session_counts_as_real_activity(
+        self, tmp_path
+    ):
+        """End-to-end golden test: a session trace using the NEW
+        `--session capture`-scoped commands must still be recognized as
+        real browser activity by the wrapper's own subprocess path (not
+        just the unit-level _count_browser_activity check)."""
+        trace = [
+            _trace_entry("agent-browser --session capture close"),
+            _trace_entry("agent-browser --session capture open http://127.0.0.1:9"),
+            _trace_entry(
+                "agent-browser --session capture screenshot /tmp/out/screens/01.png"
+            ),
+        ]
+        proc = _run_wrapper(
+            tmp_path,
+            _banner_then(
+                _payload(
+                    execution_trace=trace,
+                    response="## Screens Captured\nreal content\n## Observed Issues\nnone",
+                )
+            ),
+        )
+
+        assert proc.returncode == 0
+        assert _last_stdout_line(proc).startswith("wrote:")
+        manifest = json.loads(_manifest_path(tmp_path).read_text(encoding="utf-8"))
+        assert manifest["navigations"] == 1
+        assert manifest["screenshots"] == 1
+
+    def test_persona_role_trace_with_named_session_counts_as_real_activity(
+        self, tmp_path
+    ):
+        trace = [
+            _trace_entry("agent-browser --session persona-marisol close"),
+            _trace_entry(
+                "agent-browser --session persona-marisol open http://127.0.0.1:9"
+            ),
+            _trace_entry(
+                "agent-browser --session persona-marisol screenshot "
+                "/tmp/out/screens/persona-marisol-session.png"
+            ),
+        ]
+        personas_dir = tmp_path / "personas"
+        personas_dir.mkdir()
+        (personas_dir / "marisol.md").write_text("brief body", encoding="utf-8")
+
+        proc = _run_wrapper(
+            tmp_path,
+            _banner_then(
+                _payload(
+                    execution_trace=trace,
+                    response="# marisol -- Session Report\nreal content",
+                )
+            ),
+            role="persona",
+            report_name="persona-marisol.md",
+            extra_args=[
+                "--persona-name",
+                "marisol",
+                "--personas-dir",
+                str(personas_dir),
+            ],
+        )
+
+        assert proc.returncode == 0
+        assert _last_stdout_line(proc).startswith("wrote:")
+        manifest = json.loads(
+            (tmp_path / "out" / ".session-manifest-persona-marisol.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert manifest["navigations"] == 1
+        assert manifest["screenshots"] == 1
+
+
 class TestBuildReviewInstruction:
     """Unit tests for build_review_instruction (importlib, read-only)."""
 
