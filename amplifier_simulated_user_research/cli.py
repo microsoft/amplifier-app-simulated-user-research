@@ -29,6 +29,7 @@ import yaml
 from .config import RoundConfig, _package_repo_root
 from .doctor import doctor
 from .provenance import (
+    check_installed_build_staleness,
     describe_provenance,
     harness_provenance,
     provenance_differences,
@@ -156,6 +157,35 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _warn_if_installed_build_stale(config: RoundConfig) -> None:
+    """Warn (stderr, non-blocking) when the installed build looks stale.
+
+    A round costs an hour and real model spend; the operator should see
+    this BEFORE that, not discover it later by grepping the installed
+    wrapper (the incident this closes -- see AGENTS.md pitfall #10 and
+    provenance.py's module docstring). Prints nothing when the comparison
+    is "current" or "undetermined" (no nearby local checkout to compare
+    against, the common case for a plain install) -- only an affirmatively
+    detected difference is worth interrupting the operator for.
+    """
+    result = check_installed_build_staleness(config)
+    if result.status != "stale":
+        return
+    print(
+        f"{_PROG} run: warning -- the installed build looks stale: {result.detail}",
+        file=sys.stderr,
+    )
+    print(
+        f"{_PROG} run: merging a fix is not the same as shipping it -- "
+        f"reinstall before this round tests anything real: "
+        f"`uv tool install --force "
+        f"git+https://github.com/microsoft/amplifier-app-simulated-user-research` "
+        f"(or `uv sync` for a dev checkout). Proceeding anyway -- this is a "
+        f"warning, not a block.",
+        file=sys.stderr,
+    )
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     try:
         config = RoundConfig.from_yaml(args.config)
@@ -169,6 +199,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
         return 1
+
+    _warn_if_installed_build_stale(config)
 
     if args.on_human_gate == "fail":
         print(

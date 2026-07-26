@@ -16,6 +16,7 @@ from typing import Any
 
 from amplifier_simulated_user_research.config import RoundConfig
 from amplifier_simulated_user_research.provenance import (
+    check_installed_build_staleness,
     describe_provenance,
     harness_provenance,
     provenance_differences,
@@ -248,3 +249,135 @@ class TestDescribeProvenance:
             {"wrapper_sha256": "abc", "tool_version": "0.1.0"}
         )
         assert summary == "tool_version=0.1.0 wrapper_sha256=abc"
+
+
+class TestCheckInstalledBuildStaleness:
+    """The check that would have caught both real incidents BEFORE a round
+    ran: round 6 ran on a build predating the click-discipline fix, and a
+    later fix was merged but never reinstalled. Both are "installed build
+    differs from what's in the checkout" -- this is that comparison, run
+    against a local git checkout (never the network) so it can never block
+    a run on a hiccup it has no business failing for.
+    """
+
+    def _checkout(
+        self,
+        tmp_path: Path,
+        name: str = "checkout",
+        *,
+        wrapper: str = "# wrapper v1\n",
+        pipeline: str = "digraph { a -> b }\n",
+        git: bool = True,
+    ) -> Path:
+        root = tmp_path / name
+        for rel, content in ((WRAPPER_REL, wrapper), (PIPELINE_REL, pipeline)):
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        if git:
+            (root / ".git").mkdir()
+        return root
+
+    def test_stale_when_installed_build_predates_checkout(self, tmp_path):
+        """THE incident shape: a fix landed in the checkout but the
+        installed build still has the old bytes."""
+        installed = self._checkout(
+            tmp_path, "installed", wrapper="# wrapper WITHOUT the fix\n", git=False
+        )
+        checkout = self._checkout(
+            tmp_path, "dev-checkout", wrapper="# wrapper WITH the fix\n"
+        )
+
+        result = check_installed_build_staleness(_config(installed), start=checkout)
+
+        assert result.status == "stale"
+        assert result.checkout_path == str(checkout)
+        assert len(result.differences) == 1
+        assert "wrapper_sha256" in result.differences[0]
+
+    def test_silent_when_installed_build_matches_checkout(self, tmp_path):
+        installed = self._checkout(tmp_path, "installed", git=False)
+        checkout = self._checkout(tmp_path, "dev-checkout")
+        # Same content in both -- a real reinstall picked up the checkout.
+        (checkout / WRAPPER_REL).write_bytes((installed / WRAPPER_REL).read_bytes())
+        (checkout / PIPELINE_REL).write_bytes((installed / PIPELINE_REL).read_bytes())
+
+        result = check_installed_build_staleness(_config(installed), start=checkout)
+
+        assert result.status == "current"
+        assert result.differences == ()
+
+    def test_undetermined_when_no_checkout_discoverable(self, tmp_path):
+        """No local git checkout nearby (the common `uv tool install` case)
+        -- honest 'cannot verify', never a fabricated 'current'."""
+        installed = self._checkout(tmp_path, "installed", git=False)
+        nowhere = tmp_path / "somewhere" / "unrelated" / "empty"
+        nowhere.mkdir(parents=True)
+
+        result = check_installed_build_staleness(_config(installed), start=nowhere)
+
+        assert result.status == "undetermined"
+        assert result.checkout_path is None
+        assert result.differences == ()
+        assert "uv tool install" in result.detail
+
+    def test_current_when_running_directly_from_the_checkout(self, tmp_path):
+        """Dev mode: the installed root IS the discovered checkout (e.g.
+        `uv run` from inside a source tree, or sur_repo_dir points at it).
+        Trivially current -- there is nothing to be stale relative to."""
+        checkout = self._checkout(tmp_path, "checkout")
+
+        result = check_installed_build_staleness(_config(checkout), start=checkout)
+
+        assert result.status == "current"
+        assert result.checkout_path == str(checkout)
+        assert "running directly from the checkout" in result.detail
+
+    def test_a_copy_without_git_is_not_mistaken_for_a_checkout(self, tmp_path):
+        """A directory with the same two files but no `.git` (e.g. another
+        installed build's bundled tree sitting on disk) must not be treated
+        as a development checkout -- only `.git` marks intent."""
+        installed = self._checkout(tmp_path, "installed", git=False)
+        plain_copy = self._checkout(tmp_path, "plain-copy", git=False)
+
+        result = check_installed_build_staleness(_config(installed), start=plain_copy)
+
+        assert result.status == "undetermined"
+
+    def test_search_walks_upward_from_a_nested_start(self, tmp_path):
+        installed = self._checkout(tmp_path, "installed", git=False)
+        checkout = self._checkout(tmp_path, "dev-checkout")
+        nested = checkout / "some" / "nested" / "working" / "dir"
+        nested.mkdir(parents=True)
+
+        result = check_installed_build_staleness(_config(installed), start=nested)
+
+        assert result.checkout_path == str(checkout)
+
+    def test_missing_repo_root_degrades_to_undetermined_not_a_crash(
+        self, tmp_path, monkeypatch
+    ):
+        config = _config(self._checkout(tmp_path, "installed", git=False))
+        monkeypatch.setattr(
+            type(config),
+            "resolved_sur_repo_dir",
+            lambda self: (_ for _ in ()).throw(OSError("boom")),
+        )
+
+        result = check_installed_build_staleness(config, start=tmp_path)
+
+        assert result.status == "undetermined"
+
+    def test_never_flags_engine_fields_or_tool_version(self, tmp_path):
+        """This check is about the two prompt-shaping file surfaces only --
+        it has no opinion on tool_version or engine resolution (that
+        comparison belongs to provenance_differences at triage time)."""
+        installed = self._checkout(tmp_path, "installed", git=False)
+        checkout = self._checkout(
+            tmp_path, "dev-checkout", wrapper="# wrapper WITH the fix\n"
+        )
+
+        result = check_installed_build_staleness(_config(installed), start=checkout)
+
+        assert "tool_version" not in result.detail
+        assert "engine_path" not in result.detail

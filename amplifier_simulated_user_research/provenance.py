@@ -39,6 +39,7 @@ provenance must never fail a run it is only describing.
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -169,3 +170,196 @@ def describe_provenance(provenance: dict | None) -> str:
     if not provenance:
         return "not recorded (this round predates harness provenance)"
     return " ".join(f"{k}={v}" for k, v in sorted(provenance.items()))
+
+
+# --- Installed-build staleness -------------------------------------------
+#
+# WHY THIS EXISTS (a second incident, half a loop closed by the machinery
+# above): `harness_provenance` records, AFTER a round runs, which build
+# produced it. That answers "was this finding interpretable" in hindsight.
+# It does not answer the question that matters BEFORE spending an hour and
+# real model spend: "is the build about to run even the one I think it is?"
+#
+# Two real incidents share this shape:
+#   1. Round 6 ran on an installed build that predated the click-discipline
+#      fix -- found by manually grepping the installed wrapper for the
+#      marker string. That grep is what harness_provenance automated.
+#   2. A later fix landed as a merged PR; it was reported as shipped. The
+#      INSTALLED build still did not contain it -- merging is not the same
+#      as reinstalling. Had a round run in between, it would have
+#      reproduced a defect that was already fixed on `main`.
+#
+# SOURCE OF TRUTH, chosen deliberately: a local git checkout of this same
+# project, discovered by walking up from the current working directory
+# (the same convention `git` itself uses to find a repo root). This is
+# cheap (file reads only, no subprocess, no network) and honest: it answers
+# "does the build about to run match the checkout you are standing in and
+# presumably just pulled/merged into" -- exactly the question both
+# incidents needed answered. Comparing against the GitHub remote was
+# considered and rejected: it requires network, can fail or hang for
+# reasons that have nothing to do with staleness, and a check that can fail
+# for unrelated reasons trains people to ignore it (the same lesson
+# PRINCIPLES.md #4 draws about preflight checks generally).
+#
+# A directory only counts as "the checkout" when it has BOTH a `.git`
+# marker and the two hashed surfaces -- a plain copy of the bundled tree
+# (e.g. another installed build sitting on disk) is deliberately not
+# mistaken for a development checkout.
+#
+# When no local checkout is discoverable -- the common case for a plain
+# `uv tool install`, run from a directory with no nearby clone -- the
+# honest answer is "undetermined," never a fabricated "current." A check
+# that cannot compare anything must say so, not manufacture agreement.
+
+# Bounded upward walk (mirrors how `git` finds a repo root): far more than
+# any real project nesting depth, but never unbounded.
+_CHECKOUT_SEARCH_MAX_LEVELS = 8
+
+
+def _discover_local_checkout(
+    start: Path, max_levels: int = _CHECKOUT_SEARCH_MAX_LEVELS
+) -> Path | None:
+    """Walk upward from `start` for a git checkout of this project.
+
+    A directory qualifies only when it has a `.git` entry AND both
+    `_HASHED_SURFACES` files -- `.git` distinguishes a development checkout
+    from a plain copy of the same two files (e.g. another installed
+    build's bundled tree), which must not be mistaken for "the checkout."
+
+    Returns:
+        The checkout's root path, or None if nothing qualifies within
+        `max_levels` steps (never raises; a missing/unreadable directory
+        along the way is just another non-match).
+    """
+    try:
+        current = start.resolve()
+    except OSError:
+        return None
+
+    for _ in range(max_levels):
+        try:
+            has_git = (current / ".git").exists()
+            has_surfaces = all(
+                (current / relative_path).is_file()
+                for relative_path in _HASHED_SURFACES.values()
+            )
+        except OSError:
+            has_git = has_surfaces = False
+        if has_git and has_surfaces:
+            return current
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return None
+
+
+@dataclass(frozen=True)
+class StalenessResult:
+    """Result of comparing the installed build against a local git checkout.
+
+    Attributes:
+        status: one of --
+            "current"      the checkout was found and its prompt-shaping
+                            surfaces match the installed build (or the
+                            installed build IS the checkout, e.g. running
+                            via `uv run` from inside a source tree).
+            "stale"        the checkout was found and at least one surface
+                            differs -- the installed build does not reflect
+                            what is on disk in the checkout.
+            "undetermined" no local checkout was discoverable near the
+                            current directory. NOT a failure: this is the
+                            expected, common case for a plain `uv tool
+                            install` run from an unrelated directory.
+        checkout_path: the discovered checkout's root, or None when
+            undetermined.
+        differences: human-readable `field: installed=X checkout=Y` lines,
+            one per differing surface. Empty unless status == "stale".
+        detail: one-line human-facing summary.
+    """
+
+    status: str
+    checkout_path: str | None
+    differences: tuple[str, ...]
+    detail: str
+
+
+def check_installed_build_staleness(
+    config: RoundConfig | None = None, *, start: Path | None = None
+) -> StalenessResult:
+    """Compare the installed build's prompt-shaping surfaces to a local checkout.
+
+    Args:
+        config: Optional RoundConfig -- supplies the installed build's repo
+            root the same way `harness_provenance` does
+            (`resolved_sur_repo_dir()`, honoring a `sur_repo_dir` override).
+            When omitted, uses the package's own resolved root
+            (`config._package_repo_root`).
+        start: Where to begin the upward search for a local checkout.
+            Defaults to the current working directory -- override in tests.
+
+    Returns:
+        A StalenessResult. Never raises: every failure mode (unresolvable
+        repo root, unreadable files, no checkout found) degrades to
+        `status="undetermined"` rather than fabricating a verdict.
+    """
+    # Local import: config._package_repo_root is a "private" helper this
+    # module already treats as internal API (see harness_provenance's use
+    # of config.resolved_sur_repo_dir, which wraps the same function).
+    from .config import _package_repo_root
+
+    try:
+        installed_root = (
+            config.resolved_sur_repo_dir() if config else _package_repo_root()
+        )
+        installed_root = installed_root.resolve()
+    except OSError:
+        return StalenessResult(
+            "undetermined",
+            None,
+            (),
+            "could not resolve the installed build's repo root -- staleness "
+            "cannot be checked",
+        )
+
+    checkout = _discover_local_checkout(start or Path.cwd())
+    if checkout is None:
+        return StalenessResult(
+            "undetermined",
+            None,
+            (),
+            "no local git checkout of this project found near the current "
+            "directory -- cannot verify the installed build against source "
+            "(expected for a plain `uv tool install`; not a failure)",
+        )
+
+    if checkout == installed_root:
+        return StalenessResult(
+            "current",
+            str(checkout),
+            (),
+            f"running directly from the checkout at {checkout}",
+        )
+
+    differences: list[str] = []
+    for key, relative_path in _HASHED_SURFACES.items():
+        installed_hash = _short_sha256(installed_root / relative_path)
+        checkout_hash = _short_sha256(checkout / relative_path)
+        if installed_hash and checkout_hash and installed_hash != checkout_hash:
+            differences.append(
+                f"{key}: installed={installed_hash} checkout={checkout_hash}"
+            )
+
+    if differences:
+        return StalenessResult(
+            "stale",
+            str(checkout),
+            tuple(differences),
+            f"installed build differs from the checkout at {checkout} "
+            f"({'; '.join(differences)}) -- merging a fix is not the same "
+            f"as shipping it; reinstall before trusting a run against this "
+            f"checkout",
+        )
+    return StalenessResult(
+        "current", str(checkout), (), f"matches the checkout at {checkout}"
+    )

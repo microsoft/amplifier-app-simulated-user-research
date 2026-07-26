@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import RoundConfig, _package_repo_root
+from .provenance import check_installed_build_staleness
 from .runner import resolve_attractor_resolution
 
 PROVIDER_KEY_ENV: dict[str, str] = {
@@ -374,6 +375,30 @@ def _check_personas_customized(
     )
 
 
+def _check_installed_build_current(config: RoundConfig | None) -> DoctorCheck:
+    """Warn when the installed build differs from a nearby local checkout.
+
+    Merging a fix is not the same as shipping it: a round is only as good
+    as the build that actually runs it, and two real incidents (see
+    AGENTS.md pitfall #10 and provenance.py's module docstring) came from
+    running a round against an installed build that predated a merged fix
+    -- once discovered by a manual grep, once discovered only after the
+    finding it produced was already "fixed" upstream. This check is that
+    grep, run before a round instead of after one.
+
+    Non-blocking by design (`warn=True`, `ok=True`) when stale: the
+    operator may have a deliberate reason (e.g. auditing an older
+    installed version on purpose). When no local checkout is discoverable
+    -- the common case for a plain `uv tool install` -- this reports plain
+    OK: "undetermined" is not evidence of a problem, and flagging it as a
+    warning on every ordinary run would train people to ignore the signal.
+    """
+    result = check_installed_build_staleness(config)
+    if result.status == "stale":
+        return DoctorCheck("installed build current", True, result.detail, warn=True)
+    return DoctorCheck("installed build current", True, result.detail)
+
+
 def _check_personas_dir(personas_dir: str, personas: list[str]) -> DoctorCheck:
     p = Path(personas_dir).expanduser()
     if not p.is_dir():
@@ -416,6 +441,7 @@ def doctor(config: RoundConfig | None = None) -> list[DoctorCheck]:
         _check_dot_file(sur_repo_dir),
         _check_scripts_dir(sur_repo_dir),
         _check_browser_bundle_yaml(sur_repo_dir),
+        _check_installed_build_current(config),
     ]
 
     if config is not None:
