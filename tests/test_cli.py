@@ -108,6 +108,98 @@ class TestRunGateMessaging:
         assert "deprecated" not in capsys.readouterr().err
 
 
+class TestRunWarnsOnStaleInstalledBuild:
+    """The other half of the harness-provenance loop: warn BEFORE a round
+    spends an hour and real model spend on a build that doesn't match a
+    fix already merged into the checkout -- see AGENTS.md pitfall #10 and
+    provenance.check_installed_build_staleness's module-level docstring."""
+
+    def _stub_staleness(self, monkeypatch, result):
+        monkeypatch.setattr(
+            "amplifier_simulated_user_research.cli.check_installed_build_staleness",
+            lambda config: result,
+        )
+
+    def _patch_run_round(self, monkeypatch, tmp_path):
+        output_dir = tmp_path / "output"
+        output_dir.mkdir(exist_ok=True)
+        result = RoundResult(
+            run_id="r-20260726-000000",
+            status="gate_reached",
+            exit_code=1,
+            attractor_status="fail",
+            gate_reached=True,
+            artifacts={"research-spec.md": output_dir / "research-spec.md"},
+            logs_dir=output_dir / ".attractor-logs" / "r-20260726-000000",
+            rounds_path=output_dir / "rounds.jsonl",
+        )
+        monkeypatch.setattr(
+            "amplifier_simulated_user_research.cli.run_round",
+            lambda config, on_human_gate, timeout_s: result,
+        )
+
+    def test_warns_and_does_not_block_when_stale(self, tmp_path, monkeypatch, capsys):
+        from amplifier_simulated_user_research.provenance import StalenessResult
+
+        config_path = _valid_config_yaml(tmp_path)
+        self._patch_run_round(monkeypatch, tmp_path)
+        self._stub_staleness(
+            monkeypatch,
+            StalenessResult(
+                "stale",
+                "/home/u/dev/checkout",
+                ("wrapper_sha256: installed=aaa checkout=bbb",),
+                "installed build differs from the checkout at "
+                "/home/u/dev/checkout (wrapper_sha256: installed=aaa "
+                "checkout=bbb) -- merging a fix is not the same as "
+                "shipping it",
+            ),
+        )
+
+        rc = main(["run", "--config", str(config_path)])
+
+        assert rc == 0  # warns, never blocks
+        err = capsys.readouterr().err
+        assert "warning -- the installed build looks stale" in err
+        assert "merging a fix is not the same as shipping it" in err
+        assert "reinstall" in err
+
+    def test_silent_when_current(self, tmp_path, monkeypatch, capsys):
+        from amplifier_simulated_user_research.provenance import StalenessResult
+
+        config_path = _valid_config_yaml(tmp_path)
+        self._patch_run_round(monkeypatch, tmp_path)
+        self._stub_staleness(
+            monkeypatch,
+            StalenessResult("current", str(tmp_path), (), "matches the checkout"),
+        )
+
+        rc = main(["run", "--config", str(config_path)])
+
+        assert rc == 0
+        assert "installed build looks stale" not in capsys.readouterr().err
+
+    def test_silent_when_undetermined(self, tmp_path, monkeypatch, capsys):
+        """No nearby checkout (a plain `uv tool install`) must stay quiet --
+        otherwise every ordinary run would print a permanent, ignorable
+        warning and train the operator to stop reading it."""
+        from amplifier_simulated_user_research.provenance import StalenessResult
+
+        config_path = _valid_config_yaml(tmp_path)
+        self._patch_run_round(monkeypatch, tmp_path)
+        self._stub_staleness(
+            monkeypatch,
+            StalenessResult(
+                "undetermined", None, (), "no local git checkout found nearby"
+            ),
+        )
+
+        rc = main(["run", "--config", str(config_path)])
+
+        assert rc == 0
+        assert "installed build looks stale" not in capsys.readouterr().err
+
+
 class TestTriageCommand:
     def _seed_round(self, tmp_path: Path, run_id: str = "r-20260723-120000") -> Path:
         """Create output_dir with rounds.jsonl + findings.json for one run."""

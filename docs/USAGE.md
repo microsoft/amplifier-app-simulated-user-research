@@ -119,6 +119,20 @@ ledger. Three files carry the instrumentation:
   round you are grading came from a different build than the one installed now.
   Fields that cannot be derived truthfully are omitted rather than guessed, and
   records written before this feature simply lack the block.
+
+**That's after-the-fact provenance — read before running a round, `doctor` and
+`run` also check for staleness pre-flight.** Merging a fix to `main` does not
+update the *installed* CLI; a round only ever runs the installed build.
+`doctor`'s **"installed build current"** check (and `run`'s own pre-flight
+warning) compares the installed build's two hashed surfaces against a local
+git checkout discovered by walking up from the current directory — never the
+network, so it can't fail a run over an unrelated hiccup. Three outcomes:
+current (matches, or you're running straight from the checkout), stale (the
+checkout has content the installed build doesn't — reinstall before trusting
+this round), or undetermined (no checkout discoverable nearby, the ordinary
+case for a plain `uv tool install` — silent, not a warning). Stale is a
+warning, never a block: reinstall with `uv tool install --force
+git+https://github.com/microsoft/amplifier-app-simulated-user-research`.
 - **`amplifier-simulated-user-research triage`** — grades each finding **real / noise / wont-fix**
   (~30 seconds), records the gate verdict, persists both into the run's
   ledger record, and reports precision-at-gate with observed-tier and

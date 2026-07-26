@@ -375,6 +375,76 @@ class TestBrowserLaunchableCheck:
         assert launch_check.ok is True
 
 
+class TestInstalledBuildStalenessCheck:
+    """doctor() surfaces installed-build staleness the same way it surfaces
+    every other "worth knowing, not worth blocking" condition: ok=True,
+    warn=True, with the differing surface named in the detail."""
+
+    def test_warns_when_stale(self, monkeypatch):
+        from amplifier_simulated_user_research.provenance import StalenessResult
+
+        monkeypatch.setattr(
+            doctor_mod,
+            "check_installed_build_staleness",
+            lambda config: StalenessResult(
+                "stale",
+                "/home/u/dev/checkout",
+                ("wrapper_sha256: installed=aaa checkout=bbb",),
+                "installed build differs from the checkout at "
+                "/home/u/dev/checkout (wrapper_sha256: installed=aaa "
+                "checkout=bbb) -- merging a fix is not the same as "
+                "shipping it",
+            ),
+        )
+
+        check = doctor_mod._check_installed_build_current(None)
+
+        assert check.ok is True  # non-blocking
+        assert check.warn is True
+        assert "merging a fix is not the same as shipping it" in check.detail
+
+    def test_silent_ok_when_current(self, monkeypatch):
+        from amplifier_simulated_user_research.provenance import StalenessResult
+
+        monkeypatch.setattr(
+            doctor_mod,
+            "check_installed_build_staleness",
+            lambda config: StalenessResult(
+                "current", "/home/u/dev/checkout", (), "matches the checkout"
+            ),
+        )
+
+        check = doctor_mod._check_installed_build_current(None)
+
+        assert check.ok is True
+        assert check.warn is False
+
+    def test_silent_ok_when_undetermined(self, monkeypatch):
+        """No nearby checkout is the common case (plain `uv tool install`)
+        -- must not be flagged as a warning, or every ordinary install
+        would show a permanent, ignorable WARN line."""
+        from amplifier_simulated_user_research.provenance import StalenessResult
+
+        monkeypatch.setattr(
+            doctor_mod,
+            "check_installed_build_staleness",
+            lambda config: StalenessResult(
+                "undetermined", None, (), "no local git checkout found nearby"
+            ),
+        )
+
+        check = doctor_mod._check_installed_build_current(None)
+
+        assert check.ok is True
+        assert check.warn is False
+
+    def test_doctor_includes_the_check(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        checks = doctor(None)
+        names = [c.name for c in checks]
+        assert any("installed build current" in n for n in names)
+
+
 class TestPersonasCustomizedWarning:
     def _shipped_roster(self, tmp_path):
         """Create a fake sur_repo_dir with a shipped personas/ roster."""

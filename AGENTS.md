@@ -99,6 +99,23 @@ changes need a full live round (see the verification gradient in the PR template
     installed. Version alone is NOT the signal — this repo does not bump it per PR,
     so the content hashes are load-bearing. If you add another surface that shapes
     agent behavior, hash it there too.
+11. **Merging a fix is not the same as shipping it.** This tool is installed as a
+    CLI (`uv tool install` from the git URL) — the INSTALLED build is what actually
+    runs a round, and merging to `main` does not update it. Two incidents from this
+    exact gap: (a) round 6 ran on a build predating the click-discipline fix (see
+    pitfall #10), caught only by manually grepping the installed wrapper; (b) a
+    browser-session-hijack fix was merged as a PR, reported as fixed, and the
+    installed build still didn't contain it at all — a round run in between would
+    have reproduced the "fixed" defect. Harness provenance (pitfall #10) only closes
+    half the loop: it explains a round's findings *after* the fact. The other half —
+    `provenance.check_installed_build_staleness` + `doctor`'s "installed build
+    current" check + `run`'s pre-flight warning — compares the installed build's
+    hashed surfaces against a local git checkout discovered by walking up from cwd
+    (never the network: cheap, honest, and it can't fail a run over an unrelated
+    network hiccup). No nearby checkout is the common, non-actionable case
+    ("undetermined") and must stay silent, not warn — a check that fires on every
+    normal install trains people to ignore it. Warns, never blocks: the operator may
+    be auditing an old build on purpose.
 
 ## Workflow
 
