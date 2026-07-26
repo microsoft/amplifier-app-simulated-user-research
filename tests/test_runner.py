@@ -22,6 +22,7 @@ import pytest
 from amplifier_simulated_user_research.config import RoundConfig
 from amplifier_simulated_user_research.runner import (
     RUN_ID_PATTERN,
+    AttractorResolution,
     _mine_per_stage_wall_clock,
     _parse_attractor_status,
     generate_run_id,
@@ -110,6 +111,25 @@ def _config(tmp_path: Path, **overrides: Any) -> RoundConfig:
     return RoundConfig(**kwargs)
 
 
+def _stub_engine_resolution(monkeypatch) -> None:
+    """Stub engine resolution for harness provenance.
+
+    Every ledger record carries harness provenance, which resolves the
+    engine. In production that is a cache hit (_build_command resolved it
+    already), but a test that patches `resolve_attractor_command` leaves the
+    cache empty -- so the real resolver would run, and its identity probe
+    would land on the test's own patched `subprocess.run`, corrupting what
+    the test captured. Any test that hand-rolls a subprocess.run fake needs
+    this too.
+    """
+    monkeypatch.setattr(
+        "amplifier_simulated_user_research.runner.resolve_attractor_resolution",
+        lambda checkout: AttractorResolution(
+            command=["attractor"], source="interpreter-sibling"
+        ),
+    )
+
+
 def _mock_attractor(monkeypatch, *, returncode: int = 0, stdout: str | None = None):
     """Patch subprocess.run + attractor resolution; returns the capture dict."""
     captured: dict[str, Any] = {}
@@ -137,6 +157,7 @@ def _mock_attractor(monkeypatch, *, returncode: int = 0, stdout: str | None = No
         "amplifier_simulated_user_research.runner.resolve_attractor_command",
         lambda checkout: ["attractor"],
     )
+    _stub_engine_resolution(monkeypatch)
     return captured
 
 
@@ -366,6 +387,7 @@ class TestConsoleGateMode:
             "amplifier_simulated_user_research.runner.resolve_attractor_command",
             lambda checkout: ["attractor"],
         )
+        _stub_engine_resolution(monkeypatch)
         result = run_round(config, on_human_gate="console", run_id="r-20260724-020000")
         return config, captured, result
 
@@ -433,6 +455,7 @@ class TestConsoleGateMode:
             "amplifier_simulated_user_research.runner.resolve_attractor_command",
             lambda checkout: ["attractor"],
         )
+        _stub_engine_resolution(monkeypatch)
 
         result = run_round(config, on_human_gate="stop")
         assert captured["kwargs"].get("capture_output") is True
@@ -628,6 +651,7 @@ class TestRunRound:
             "amplifier_simulated_user_research.runner.resolve_attractor_command",
             lambda checkout: ["attractor"],
         )
+        _stub_engine_resolution(monkeypatch)
 
         run_round(config)
 
@@ -659,6 +683,7 @@ class TestRunRound:
             "amplifier_simulated_user_research.runner.resolve_attractor_command",
             lambda checkout: ["attractor"],
         )
+        _stub_engine_resolution(monkeypatch)
 
         run_round(config)
 
@@ -675,6 +700,80 @@ class TestRunRound:
         assert result.logs_dir is not None
         assert result.logs_dir.name == "r-20260723-120000"
         assert result.logs_dir.is_dir()
+
+
+class TestLedgerHarnessProvenance:
+    """Every record says which build produced it (see provenance.py's incident)."""
+
+    def _with_prompt_surfaces(self, tmp_path) -> None:
+        """Give the fake sur_repo_dir the two prompt-shaping surfaces."""
+        wrapper = tmp_path / "scripts" / "run_browser_node.py"
+        wrapper.parent.mkdir(parents=True, exist_ok=True)
+        wrapper.write_text("# fake wrapper\n", encoding="utf-8")
+        pipeline = tmp_path / "pipelines" / "simulated-user-research.dot"
+        pipeline.parent.mkdir(parents=True, exist_ok=True)
+        pipeline.write_text("digraph { a -> b }\n", encoding="utf-8")
+
+    def test_normal_run_records_harness_provenance(self, tmp_path, monkeypatch):
+        self._with_prompt_surfaces(tmp_path)
+        config = _config(tmp_path)
+        _mock_attractor(monkeypatch, returncode=0)
+
+        run_round(config, run_id="r-20260725-120000")
+
+        record = json.loads(
+            (Path(config.output_dir) / "rounds.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()[0]
+        )
+        harness = record["harness"]
+        assert harness["tool_version"]
+        assert len(harness["wrapper_sha256"]) == 12
+        assert len(harness["pipeline_sha256"]) == 12
+        assert harness["engine_source"] == "interpreter-sibling"
+        assert harness["engine_path"] == "attractor"
+
+    def test_harness_reflects_the_prompt_surface_actually_used(
+        self, tmp_path, monkeypatch
+    ):
+        """Two runs against different wrapper content get different hashes --
+        the signal that would have caught the click-discipline incident."""
+        self._with_prompt_surfaces(tmp_path)
+        config = _config(tmp_path)
+        _mock_attractor(monkeypatch, returncode=0)
+        run_round(config, run_id="r-20260725-120000")
+
+        (tmp_path / "scripts" / "run_browser_node.py").write_text(
+            "# fake wrapper\n## CLICK DISCIPLINE\n", encoding="utf-8"
+        )
+        run_round(config, run_id="r-20260725-130000")
+
+        lines = (
+            (Path(config.output_dir) / "rounds.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
+        before, after = (json.loads(line)["harness"] for line in lines)
+        assert before["wrapper_sha256"] != after["wrapper_sha256"]
+        assert before["pipeline_sha256"] == after["pipeline_sha256"]
+
+    def test_missing_surfaces_degrade_without_failing_the_run(
+        self, tmp_path, monkeypatch
+    ):
+        """Provenance describes a run; it must never break one."""
+        config = _config(tmp_path)  # no scripts/ or pipelines/ in this fake repo
+        _mock_attractor(monkeypatch, returncode=0)
+
+        result = run_round(config, run_id="r-20260725-120000")
+
+        assert result.status == "completed"
+        record = json.loads(
+            (Path(config.output_dir) / "rounds.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()[0]
+        )
+        assert "wrapper_sha256" not in record["harness"]
+        assert record["harness"]["tool_version"]
 
 
 class TestRoundsLedger:
@@ -759,6 +858,7 @@ class TestRoundsLedger:
             "amplifier_simulated_user_research.runner.resolve_attractor_command",
             lambda checkout: ["attractor"],
         )
+        _stub_engine_resolution(monkeypatch)
 
         run_round(config, run_id=run_id)
 

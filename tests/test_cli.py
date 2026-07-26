@@ -201,3 +201,127 @@ class TestTriageCommand:
 
         assert rc == 0
         assert "may be stale" in capsys.readouterr().err
+
+
+class TestTriageHarnessWarning:
+    """A finding is only interpretable against the build that produced it.
+
+    The incident: a round reported a false "control does nothing" because it
+    ran on a build predating the click-discipline prompt fix. Nothing in the
+    run's records said so -- it took a manual grep of the installed wrapper.
+    This warning is that grep, automated.
+    """
+
+    def _seed(self, tmp_path: Path, harness: dict | None) -> Path:
+        """Seed a ledger record (optionally carrying harness provenance)."""
+        output_dir = tmp_path / "output"
+        output_dir.mkdir(exist_ok=True)
+        record: dict = {
+            "run_id": "r-20260725-120000",
+            "status": "gate_reached",
+            "gate_reached": True,
+            "gate": None,
+            "triage": None,
+        }
+        if harness is not None:
+            record["harness"] = harness
+        (output_dir / "rounds.jsonl").write_text(
+            json.dumps(record) + "\n", encoding="utf-8"
+        )
+        (output_dir / "findings.json").write_text(
+            json.dumps(
+                {
+                    "run_id": "r-20260725-120000",
+                    "findings": [
+                        {
+                            "id": "F-001",
+                            "title": "Control does nothing",
+                            "severity": "P1",
+                            "evidence_tier": "OBSERVED",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return output_dir
+
+    def _current_harness(self, config_path: Path) -> dict:
+        """Provenance as triage will compute it for this config."""
+        from amplifier_simulated_user_research.config import RoundConfig
+        from amplifier_simulated_user_research.provenance import harness_provenance
+
+        return harness_provenance(
+            RoundConfig.from_yaml(config_path), include_engine=False
+        )
+
+    def _answer(self, monkeypatch, answers: list[str]) -> None:
+        queue = iter(answers)
+        monkeypatch.setattr("builtins.input", lambda prompt="": next(queue))
+
+    def test_warns_when_harness_differs(self, tmp_path, monkeypatch, capsys):
+        config_path = _valid_config_yaml(tmp_path)
+        self._seed(
+            tmp_path,
+            {"tool_version": "0.0.1-ancient", "wrapper_sha256": "beforefix123"},
+        )
+        self._answer(monkeypatch, ["a", "r"])
+
+        rc = main(["triage", "--config", str(config_path)])
+
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "harness mismatch" in err
+        assert "beforefix123" in err  # what the run used
+        assert "0.0.1-ancient" in err
+        assert "Re-run the round" in err  # actionable
+
+    def test_silent_when_harness_matches(self, tmp_path, monkeypatch, capsys):
+        config_path = _valid_config_yaml(tmp_path)
+        self._seed(tmp_path, self._current_harness(config_path))
+        self._answer(monkeypatch, ["a", "r"])
+
+        rc = main(["triage", "--config", str(config_path)])
+
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "harness mismatch" not in err
+        assert "predates" not in err
+
+    def test_engine_path_difference_alone_does_not_warn(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Engine location varies by machine -- warning on it would be noise."""
+        config_path = _valid_config_yaml(tmp_path)
+        harness = self._current_harness(config_path)
+        harness["engine_path"] = "/some/other/machine/bin/attractor"
+        harness["engine_source"] = "PATH"
+        self._seed(tmp_path, harness)
+        self._answer(monkeypatch, ["a", "r"])
+
+        rc = main(["triage", "--config", str(config_path)])
+
+        assert rc == 0
+        assert "harness mismatch" not in capsys.readouterr().err
+
+    def test_old_record_without_harness_is_tolerated(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Append-only ledger: pre-feature records simply lack the key. The
+        reader must say so plainly and still complete the triage."""
+        config_path = _valid_config_yaml(tmp_path)
+        output_dir = self._seed(tmp_path, None)
+        self._answer(monkeypatch, ["a", "r"])
+
+        rc = main(["triage", "--config", str(config_path)])
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "predates" in captured.err
+        assert "harness mismatch" not in captured.err
+        # ...and the verdicts still persisted
+        record = json.loads(
+            (output_dir / "rounds.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        )
+        assert record["gate"] == "approve"
+        assert record["triage"] == [{"id": "F-001", "verdict": "real"}]

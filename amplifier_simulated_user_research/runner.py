@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import RoundConfig
+from .provenance import harness_provenance
 
 # Artifact filenames the .dot graph's own contract defines (see
 # pipelines/simulated-user-research.dot's per-stage `check_*`/`verify_*`
@@ -638,6 +639,13 @@ def run_round(
         "wall_clock_s": round((ts_end - ts_start).total_seconds(), 3),
         "per_stage_wall_clock": _mine_per_stage_wall_clock(logs_dir),
         "prior_run_id": _read_prior_run_id(rounds_path),
+        # Which build of the harness produced this round's findings. A
+        # finding is only interpretable against the prompts that shaped it:
+        # a round once reported a false "control does nothing" because it
+        # ran on a build predating the click-discipline prompt fix, and
+        # nothing in its records said so. Best-effort and partial by design
+        # (see provenance.harness_provenance) -- never fails a run.
+        "harness": harness_provenance(config),
         "gate": None,
         "triage": None,
     }
