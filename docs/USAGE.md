@@ -103,11 +103,22 @@ ledger. Three files carry the instrumentation:
   `ts_start`/`ts_end`, `status`, `gate_reached`, `artifacts`, `wall_clock_s`,
   `per_stage_wall_clock` (mined from the engine's own per-node `status.json`
   `duration_ms`; `null` when not derivable — never a guess), `prior_run_id`
-  (so round N can re-check round N−1's P1s), and `gate`/`triage` (null until
-  triage). Lives in `output_dir` so it travels with the artifacts.
+  (so round N can re-check round N−1's P1s), `harness` (see below), and
+  `gate`/`triage` (null until triage). Lives in `output_dir` so it travels with
+  the artifacts.
 - **`<output_dir>/findings.json`** — emitted by synthesis:
   `{"run_id", "findings": [{"id", "title", "severity", "evidence_tier",
   "confirmation", "repro", "sources"}]}`.
+- **`harness`** — which build produced the round: `tool_version`,
+  `wrapper_sha256` and `pipeline_sha256` (sha256[:12] of
+  `scripts/run_browser_node.py` and the pipeline `.dot` — the two surfaces that
+  carry every prompt shaping agent behavior), plus the resolved `engine_path` /
+  `engine_source`. A finding cannot be read without it: one round's "control does
+  nothing" finding was an artifact of a browser-click bug fixed in a later build,
+  and only the harness fingerprint distinguishes the two. `triage` warns when the
+  round you are grading came from a different build than the one installed now.
+  Fields that cannot be derived truthfully are omitted rather than guessed, and
+  records written before this feature simply lack the block.
 - **`amplifier-simulated-user-research triage`** — grades each finding **real / noise / wont-fix**
   (~30 seconds), records the gate verdict, persists both into the run's
   ledger record, and reports precision-at-gate with observed-tier and

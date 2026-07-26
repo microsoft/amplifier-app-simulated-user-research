@@ -28,9 +28,15 @@ import yaml
 
 from .config import RoundConfig, _package_repo_root
 from .doctor import doctor
+from .provenance import (
+    describe_provenance,
+    harness_provenance,
+    provenance_differences,
+)
 from .runner import SYNTHESIS_ARTIFACT, run_round
 from .triage import (
     ask_gate_verdict,
+    find_round,
     latest_round,
     load_findings,
     precision_summary,
@@ -204,6 +210,66 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if result.status == "completed" else 1
 
 
+def _warn_on_harness_mismatch(
+    config: RoundConfig,
+    output_dir: Path,
+    run_id: str,
+    latest: dict,
+) -> None:
+    """Warn when findings came from a different harness build than the current one.
+
+    A finding is only interpretable against the prompts that produced it. A
+    round once reported a false "control does nothing" because it ran on a
+    build predating the click-discipline prompt fix -- catching that took a
+    manual grep of the installed wrapper. This is that grep, automated.
+
+    Writes to stderr only; never blocks triage (the human may well be
+    grading an old round on purpose).
+    """
+    record = latest if str(latest.get("run_id")) == run_id else None
+    if record is None:
+        record = find_round(output_dir, run_id) or {}
+
+    recorded = record.get("harness")
+    if not recorded:
+        # Old ledger records predate this field. Say so plainly rather than
+        # implying agreement we cannot verify.
+        print(
+            f"{_PROG} triage: note -- run {run_id} has no recorded harness "
+            f"provenance (it predates that field), so the build that produced "
+            f"these findings cannot be verified. Runs from now on record it.",
+            file=sys.stderr,
+        )
+        return
+
+    # include_engine=False: engine resolution identity-probes binaries with a
+    # subprocess, and the engine path is not compared anyway (it legitimately
+    # varies by machine) -- see provenance._COMPARED_FIELDS.
+    current = harness_provenance(config, include_engine=False)
+    differences = provenance_differences(recorded, current)
+    if not differences:
+        return
+
+    print(
+        f"{_PROG} triage: warning -- harness mismatch: run {run_id} was "
+        f"produced by a different build than the one installed now "
+        f"({'; '.join(differences)}). Findings reflect the harness that "
+        f"produced them: a prompt-surface change may have fixed (or "
+        f"introduced) the very behavior a finding describes. Re-run the "
+        f"round before trusting a finding you cannot reproduce on the "
+        f"current build.",
+        file=sys.stderr,
+    )
+    print(
+        f"{_PROG} triage: run harness: {describe_provenance(recorded)}",
+        file=sys.stderr,
+    )
+    print(
+        f"{_PROG} triage: current harness: {describe_provenance(current)}",
+        file=sys.stderr,
+    )
+
+
 def cmd_triage(args: argparse.Namespace) -> int:
     try:
         config = RoundConfig.from_yaml(args.config)
@@ -238,6 +304,8 @@ def cmd_triage(args: argparse.Namespace) -> int:
             f"findings may be stale (from an earlier run of this round).",
             file=sys.stderr,
         )
+
+    _warn_on_harness_mismatch(config, output_dir, run_id, record)
 
     if not findings:
         print(

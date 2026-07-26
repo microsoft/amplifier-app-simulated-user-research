@@ -111,6 +111,19 @@ def latest_round(output_dir: str | Path) -> dict | None:
     return records[-1] if records else None
 
 
+def find_round(output_dir: str | Path, run_id: str) -> dict | None:
+    """Return the ledger record for a specific run_id, or None.
+
+    Searches newest-first so a re-recorded run_id resolves to its latest
+    record -- the same "last write wins" reading `record_triage` uses.
+    """
+    records = read_rounds(Path(output_dir).expanduser() / ROUNDS_LEDGER)
+    for record in reversed(records):
+        if record.get("run_id") == run_id:
+            return record
+    return None
+
+
 def _normalize_answer(raw: str, shortcuts: dict[str, str]) -> str | None:
     return shortcuts.get(raw.strip().lower())
 

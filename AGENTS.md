@@ -87,6 +87,18 @@ changes need a full live round (see the verification gradient in the PR template
    cannot discover it. If you add a bundle file, keep it out of any directory with
    a pyproject.toml, and never reintroduce a literal `bundle.md`/`bundle.yaml` at
    the repo root.
+10. **A round's findings are only interpretable against the harness that produced
+    them.** A round reported three "control X does nothing" findings; two were real,
+    one was a false positive from the off-viewport click artifact that a
+    click-discipline prompt block had ALREADY fixed — the round had run on an
+    installed build predating the fix, and nothing in its records said so. Finding
+    that took a manual grep of the installed wrapper for "CLICK DISCIPLINE". Every
+    ledger record now carries a `harness` block (tool version + sha256[:12] of
+    `scripts/run_browser_node.py` and the `.dot` + resolved engine), and `triage`
+    warns when the round being graded came from a different build than the one
+    installed. Version alone is NOT the signal — this repo does not bump it per PR,
+    so the content hashes are load-bearing. If you add another surface that shapes
+    agent behavior, hash it there too.
 
 ## Workflow
 
