@@ -190,30 +190,85 @@ def describe_provenance(provenance: dict | None) -> str:
 #      reproduced a defect that was already fixed on `main`.
 #
 # SOURCE OF TRUTH, chosen deliberately: a local git checkout of this same
-# project, discovered by walking up from the current working directory
-# (the same convention `git` itself uses to find a repo root). This is
-# cheap (file reads only, no subprocess, no network) and honest: it answers
-# "does the build about to run match the checkout you are standing in and
-# presumably just pulled/merged into" -- exactly the question both
-# incidents needed answered. Comparing against the GitHub remote was
-# considered and rejected: it requires network, can fail or hang for
-# reasons that have nothing to do with staleness, and a check that can fail
-# for unrelated reasons trains people to ignore it (the same lesson
-# PRINCIPLES.md #4 draws about preflight checks generally).
+# project. Comparing against the GitHub remote was considered and rejected:
+# it requires network, can fail or hang for reasons that have nothing to do
+# with staleness, and a check that can fail for unrelated reasons trains
+# people to ignore it (the same lesson PRINCIPLES.md #4 draws about
+# preflight checks generally).
 #
-# A directory only counts as "the checkout" when it has BOTH a `.git`
-# marker and the two hashed surfaces -- a plain copy of the bundled tree
-# (e.g. another installed build sitting on disk) is deliberately not
-# mistaken for a development checkout.
+# WHICH checkout, in priority order:
 #
-# When no local checkout is discoverable -- the common case for a plain
-# `uv tool install`, run from a directory with no nearby clone -- the
+#   1. `config.sur_repo_dir`, when a config supplies it. The operator has
+#      EXPLICITLY declared which checkout this run belongs to -- that is
+#      strictly more authoritative than any search heuristic. This is not a
+#      refinement; it is the whole check. A first version of this feature
+#      only walked upward from the cwd, and it silently returned
+#      "undetermined" in the exact workflow both incidents came from: rounds
+#      are launched from the WORKSPACE ROOT with `--config`, where the
+#      checkout is a DESCENDANT of the cwd, so walking up never reaches it
+#      -- while the config named its absolute path the whole time.
+#   2. Otherwise, a bounded upward walk from the current working directory
+#      (the convention `git` itself uses). This is the `doctor` with no
+#      `--config` case: no declaration to honor, so fall back to "the
+#      checkout you are standing in."
+#
+# A config-declared directory that does not QUALIFY (below) yields
+# "undetermined" -- deliberately WITHOUT falling back to the walk. The
+# operator said this run belongs to checkout X; silently grading it against
+# some unrelated checkout Y found up the tree would be a confident verdict
+# about the wrong repository, which is worse than no verdict.
+#
+# QUALIFYING as a checkout requires BOTH a `.git` marker and the two hashed
+# surfaces. A plain copy of the bundled tree (e.g. another installed build
+# sitting on disk) is deliberately not mistaken for a development checkout.
+#
+# THE INSTALLED SIDE is always `config._package_repo_root()` -- the tree
+# belonging to the Python package that is actually executing (the wheel's
+# `_bundled/` for a `uv tool install`, the source tree under `uv run`).
+# It is emphatically NOT `config.resolved_sur_repo_dir()`: that method
+# returns the config's own `sur_repo_dir` override when set, so using it
+# compared the declared checkout against ITSELF and could only ever report
+# "current". The running build and the checkout are two different things,
+# and this check exists precisely to compare them.
+#
+# When no checkout can be established -- the common case for a plain
+# `uv tool install` invoked with no config and no nearby clone -- the
 # honest answer is "undetermined," never a fabricated "current." A check
 # that cannot compare anything must say so, not manufacture agreement.
+#
+# LIMITS, stated so nobody reads more into a "current" than it supports:
+# this compares the two PROMPT-SHAPING surfaces, which is what governs what
+# a finding says. It is blind to changes that live only in this package's
+# Python (orchestration, ledger, triage) -- a Python-only release can leave
+# the installed CLI behind while both surfaces still match, and this
+# reports "current". Note also that when `sur_repo_dir` names the checkout,
+# the ROUND reads its prompts from the checkout, not from the installed
+# `_bundled/` copies; a "stale" verdict there is therefore evidence that
+# the CLI was never reinstalled (so its Python IS behind), rather than
+# proof that this round's prompts were wrong. Both readings are actionable;
+# neither is "your findings are invalid."
 
 # Bounded upward walk (mirrors how `git` finds a repo root): far more than
 # any real project nesting depth, but never unbounded.
 _CHECKOUT_SEARCH_MAX_LEVELS = 8
+
+
+def _qualifies_as_checkout(path: Path) -> bool:
+    """True when `path` is a git checkout of this project.
+
+    Requires BOTH a `.git` entry and every `_HASHED_SURFACES` file: `.git`
+    is what distinguishes a development checkout from a plain copy of the
+    same two files (e.g. another installed build's `_bundled/` tree), which
+    must never be mistaken for the source of truth. Never raises -- an
+    unreadable path is simply not a checkout.
+    """
+    try:
+        return (path / ".git").exists() and all(
+            (path / relative_path).is_file()
+            for relative_path in _HASHED_SURFACES.values()
+        )
+    except OSError:
+        return False
 
 
 def _discover_local_checkout(
@@ -221,10 +276,10 @@ def _discover_local_checkout(
 ) -> Path | None:
     """Walk upward from `start` for a git checkout of this project.
 
-    A directory qualifies only when it has a `.git` entry AND both
-    `_HASHED_SURFACES` files -- `.git` distinguishes a development checkout
-    from a plain copy of the same two files (e.g. another installed
-    build's bundled tree), which must not be mistaken for "the checkout."
+    The FALLBACK source of truth, used only when no config declares one
+    (see this section's header comment: a config's `sur_repo_dir` is more
+    authoritative, and an upward walk cannot find a checkout that is a
+    DESCENDANT of the working directory -- the shape of every real round).
 
     Returns:
         The checkout's root path, or None if nothing qualifies within
@@ -237,15 +292,7 @@ def _discover_local_checkout(
         return None
 
     for _ in range(max_levels):
-        try:
-            has_git = (current / ".git").exists()
-            has_surfaces = all(
-                (current / relative_path).is_file()
-                for relative_path in _HASHED_SURFACES.values()
-            )
-        except OSError:
-            has_git = has_surfaces = False
-        if has_git and has_surfaces:
+        if _qualifies_as_checkout(current):
             return current
         parent = current.parent
         if parent == current:
@@ -260,18 +307,22 @@ class StalenessResult:
 
     Attributes:
         status: one of --
-            "current"      the checkout was found and its prompt-shaping
+            "current"      a checkout was established and its prompt-shaping
                             surfaces match the installed build (or the
-                            installed build IS the checkout, e.g. running
+                            installed build IS that checkout, e.g. running
                             via `uv run` from inside a source tree).
-            "stale"        the checkout was found and at least one surface
-                            differs -- the installed build does not reflect
-                            what is on disk in the checkout.
-            "undetermined" no local checkout was discoverable near the
-                            current directory. NOT a failure: this is the
-                            expected, common case for a plain `uv tool
-                            install` run from an unrelated directory.
-        checkout_path: the discovered checkout's root, or None when
+            "stale"        a checkout was established and at least one
+                            surface differs -- the installed build does not
+                            reflect what is on disk in the checkout.
+            "undetermined" no checkout could be established: none declared
+                            and none found nearby, or the declared one does
+                            not qualify. NOT a failure, and never a
+                            fabricated "current".
+        checkout_path: the established checkout's root, or None when
+            undetermined.
+        checkout_source: how it was established -- "config sur_repo_dir"
+            (the operator declared it) or "directory walk" (found by
+            searching upward from the working directory). None when
             undetermined.
         differences: human-readable `field: installed=X checkout=Y` lines,
             one per differing surface. Empty unless status == "stale".
@@ -280,8 +331,14 @@ class StalenessResult:
 
     status: str
     checkout_path: str | None
+    checkout_source: str | None
     differences: tuple[str, ...]
     detail: str
+
+
+def _undetermined(detail: str) -> StalenessResult:
+    """An honest non-answer: no verdict, and explicitly no comparison made."""
+    return StalenessResult("undetermined", None, None, (), detail)
 
 
 def check_installed_build_staleness(
@@ -289,54 +346,80 @@ def check_installed_build_staleness(
 ) -> StalenessResult:
     """Compare the installed build's prompt-shaping surfaces to a local checkout.
 
+    The installed side is always the running package's own tree
+    (`config._package_repo_root`). The checkout side is the config's
+    declared `sur_repo_dir` when there is one, else an upward walk from
+    `start`. See this section's header comment for why that priority is
+    load-bearing rather than cosmetic.
+
     Args:
-        config: Optional RoundConfig -- supplies the installed build's repo
-            root the same way `harness_provenance` does
-            (`resolved_sur_repo_dir()`, honoring a `sur_repo_dir` override).
-            When omitted, uses the package's own resolved root
-            (`config._package_repo_root`).
-        start: Where to begin the upward search for a local checkout.
-            Defaults to the current working directory -- override in tests.
+        config: Optional RoundConfig. Its `sur_repo_dir`, when set, is the
+            authoritative source of truth -- the operator has declared
+            which checkout this run belongs to.
+        start: Where to begin the FALLBACK upward search when no config
+            declares a repo dir. Defaults to the current working directory
+            -- override in tests.
 
     Returns:
         A StalenessResult. Never raises: every failure mode (unresolvable
-        repo root, unreadable files, no checkout found) degrades to
-        `status="undetermined"` rather than fabricating a verdict.
+        package root, unreadable files, no checkout established) degrades
+        to `status="undetermined"` rather than fabricating a verdict.
     """
     # Local import: config._package_repo_root is a "private" helper this
     # module already treats as internal API (see harness_provenance's use
     # of config.resolved_sur_repo_dir, which wraps the same function).
     from .config import _package_repo_root
 
+    # THE INSTALLED SIDE: the tree belonging to the package that is
+    # actually executing -- never config.resolved_sur_repo_dir(), which
+    # returns the config's own override and would compare the declared
+    # checkout against itself.
     try:
-        installed_root = (
-            config.resolved_sur_repo_dir() if config else _package_repo_root()
-        )
-        installed_root = installed_root.resolve()
+        installed_root = _package_repo_root().resolve()
     except OSError:
-        return StalenessResult(
-            "undetermined",
-            None,
-            (),
-            "could not resolve the installed build's repo root -- staleness "
-            "cannot be checked",
+        return _undetermined(
+            "could not resolve the running package's own repo root -- "
+            "staleness cannot be checked"
         )
 
-    checkout = _discover_local_checkout(start or Path.cwd())
-    if checkout is None:
-        return StalenessResult(
-            "undetermined",
-            None,
-            (),
-            "no local git checkout of this project found near the current "
-            "directory -- cannot verify the installed build against source "
-            "(expected for a plain `uv tool install`; not a failure)",
-        )
+    declared = config.sur_repo_dir if config else None
+    if declared:
+        try:
+            checkout = Path(declared).expanduser().resolve()
+        except OSError:
+            return _undetermined(
+                f"config declares sur_repo_dir={declared} but it could not "
+                f"be resolved -- cannot verify the installed build against it"
+            )
+        if not _qualifies_as_checkout(checkout):
+            # Deliberately no fallback to the walk: the operator said this
+            # run belongs to THIS directory, and grading it against some
+            # other checkout found up the tree would be a confident verdict
+            # about the wrong repository.
+            return _undetermined(
+                f"config declares sur_repo_dir={checkout}, but that is not a "
+                f"git checkout of this project (needs a .git marker plus "
+                f"scripts/run_browser_node.py and the pipeline .dot) -- "
+                f"cannot verify the installed build against it"
+            )
+        checkout_source = "config sur_repo_dir"
+    else:
+        found = _discover_local_checkout(start or Path.cwd())
+        if found is None:
+            return _undetermined(
+                "no local git checkout of this project found near the current "
+                "directory, and no config declared one -- cannot verify the "
+                "installed build against source (expected for a plain "
+                "`uv tool install`; not a failure)"
+            )
+        checkout = found
+        checkout_source = "directory walk"
 
     if checkout == installed_root:
         return StalenessResult(
             "current",
             str(checkout),
+            checkout_source,
             (),
             f"running directly from the checkout at {checkout}",
         )
@@ -354,12 +437,17 @@ def check_installed_build_staleness(
         return StalenessResult(
             "stale",
             str(checkout),
+            checkout_source,
             tuple(differences),
-            f"installed build differs from the checkout at {checkout} "
-            f"({'; '.join(differences)}) -- merging a fix is not the same "
-            f"as shipping it; reinstall before trusting a run against this "
-            f"checkout",
+            f"installed build ({installed_root}) differs from the checkout at "
+            f"{checkout} ({'; '.join(differences)}) -- merging a fix is not "
+            f"the same as shipping it; reinstall before trusting a run "
+            f"against this checkout",
         )
     return StalenessResult(
-        "current", str(checkout), (), f"matches the checkout at {checkout}"
+        "current",
+        str(checkout),
+        checkout_source,
+        (),
+        f"matches the checkout at {checkout}",
     )

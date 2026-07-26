@@ -389,6 +389,7 @@ class TestInstalledBuildStalenessCheck:
             lambda config: StalenessResult(
                 "stale",
                 "/home/u/dev/checkout",
+                "config sur_repo_dir",
                 ("wrapper_sha256: installed=aaa checkout=bbb",),
                 "installed build differs from the checkout at "
                 "/home/u/dev/checkout (wrapper_sha256: installed=aaa "
@@ -410,7 +411,11 @@ class TestInstalledBuildStalenessCheck:
             doctor_mod,
             "check_installed_build_staleness",
             lambda config: StalenessResult(
-                "current", "/home/u/dev/checkout", (), "matches the checkout"
+                "current",
+                "/home/u/dev/checkout",
+                "config sur_repo_dir",
+                (),
+                "matches the checkout",
             ),
         )
 
@@ -429,7 +434,7 @@ class TestInstalledBuildStalenessCheck:
             doctor_mod,
             "check_installed_build_staleness",
             lambda config: StalenessResult(
-                "undetermined", None, (), "no local git checkout found nearby"
+                "undetermined", None, None, (), "no local git checkout found nearby"
             ),
         )
 
