@@ -53,7 +53,9 @@ changes need a full live round (see the verification gradient in the PR template
    dependency…"). So the **root** `pyproject.toml` AND
    `modules/tool-simulated-user-research/pyproject.toml` each declare the FULL
    transitive git closure (pipeline-runner, foundation, loop-pipeline,
-   unified-llm-client) as direct deps, even though neither imports them all.
+   unified-llm-client, remote-source, loop-agent) as direct deps, even though
+   neither imports them all. `loop-pipeline` must include its `remote` extra;
+   `loop-agent` is required by the runner's explicit `--worker coding-agent`.
    Adding a git dep anywhere means adding its closure too, or L3/L4 installs
    break. Reproduce the activator's exact command to test — don't guess.
 5. **agent-browser on Linux ARM64**: Chrome-for-Testing ships no arm64 builds;
@@ -61,25 +63,20 @@ changes need a full live round (see the verification gradient in the PR template
    (`AGENT_BROWSER_EXECUTABLE_PATH` → Playwright `headless_shell`, `--no-sandbox`).
 6. **`amplifier run -B` needs a `file://` URL** — a bare path is treated as a
    registered bundle name and won't resolve.
-7. **`--on-human-gate console`** needs engine ≥ attractor PR #95 (on `@main`);
-   `stop` is the default unattended ending and is SUCCESS, not failure.
-8. **`attractor` is a generic binary name — presence ≠ identity.** An unrelated
-   package shipped its own `attractor` earlier on PATH; `shutil.which()`-first
-   resolution shelled out to it and the run died with an inscrutable argparse
-   `unrecognized arguments` error, while `doctor` had reported **[OK]** because
-   it only checked existence. Resolution is now **interpreter-sibling first**
-   (the engine installed alongside us), PATH only as fallback, and every
-   candidate is **identity-probed** (`<binary> run --help` must advertise
-   `--param`, `--logs-root`, `--on-human-gate`) before use — rejects are named
-   in the loud failure. Generalize the lesson: any preflight check must
-   validate *capability*, not presence (same class as the browser-launchability
-   check). If you add a dependency on an external binary, probe what it can do.
+7. **`--on-human-gate console`** is supported by dot-runner; `stop` is the
+   default unattended ending and is SUCCESS, not failure.
+8. **`dot-runner` resolution validates capability, not merely presence.**
+   Resolution is **interpreter-sibling first** (the engine installed alongside
+   us), with PATH only as fallback. Every candidate is **identity-probed**
+   (`<binary> run --help` must advertise `--param`, `--logs-root`,
+   `--on-human-gate`, and `--worker`) before use. Generalize the lesson: any
+   preflight check must validate *capability*, not presence.
 9. **Never let a bundle file sit where the activator can find our pyproject.toml.**
    The Amplifier activator editable-installs the package at a bundle's
    `base_path` — AND, for a bundle in a subdirectory, it walks UP looking for the
    nearest `bundle.md`/`bundle.yaml` and installs that root bundle's *source root*
    too (`registry.py:_find_nearest_bundle_file`). Either path installing THIS repo
-   into the Amplifier CLI's venv fails whenever that venv's attractor pins differ
+   into the Amplifier CLI's venv fails whenever that venv's dot-runner pins differ
    from our `@main` git deps (the activator's generated `--overrides` conflict) —
    which killed every browser stage. Hence: the browser bundle lives in the
    package-free `bundles/` dir, and the root L3 bundle is named

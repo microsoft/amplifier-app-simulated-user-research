@@ -19,8 +19,8 @@ dependencies = [
     "amplifier-app-simulated-user-research @ git+https://github.com/microsoft/amplifier-app-simulated-user-research@main",
     # Direct git references for the FULL transitive git/URL-dependency
     # closure of amplifier-app-simulated-user-research (-> amplifier-module-
-    # pipeline-runner -> {amplifier-foundation, amplifier-module-loop-
-    # pipeline} -> amplifier-unified-llm-client). Required because the
+    # pipeline-runner -> loop-pipeline[remote] -> {unified-llm-client,
+    # remote-source}, plus loop-agent for the coding-agent worker). Required because the
     # amplifier module activator installs each module via
     # `uv pip install -e . --no-sources` (uv's *pip-compatible* interface) --
     # which rejects any URL/git dependency that appears only transitively
@@ -33,10 +33,12 @@ dependencies = [
     # direct requirements or constraints." for that exact package. If
     # activation ever fails again with the same error for a NEW package,
     # add that package's exact dependency string here too.
-    "amplifier-module-pipeline-runner @ git+https://github.com/microsoft/amplifier-bundle-attractor@main#subdirectory=modules/pipeline-runner",
-    "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main",
-    "amplifier-module-loop-pipeline @ git+https://github.com/microsoft/amplifier-bundle-attractor@main#subdirectory=modules/loop-pipeline",
-    "amplifier-unified-llm-client @ git+https://github.com/microsoft/amplifier-bundle-attractor@main#subdirectory=modules/unified-llm-client",
+    "amplifier-module-pipeline-runner @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/pipeline-runner",
+    "amplifier-foundation>=1.0.0",
+    "amplifier-module-loop-pipeline[remote] @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/loop-pipeline",
+    "amplifier-unified-llm-client @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/unified-llm-client",
+    "amplifier-module-remote-source @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/remote-source",
+    "amplifier-module-loop-agent @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/loop-agent",
 ]
 
 [project.entry-points."amplifier.modules"]
@@ -50,22 +52,13 @@ build-backend = "hatchling.build"
 
 [tool.uv]
 package = true
-# Constraint-only pins (NOT direct dependencies) for the transitive git/URL
-# deps that amplifier-app-simulated-user-research -> amplifier-module-pipeline-runner
-# pulls in. Required because the amplifier module activator installs each
-# module via `uv pip install -e . --no-sources` (uv's legacy pip resolver),
-# which rejects any URL/git dependency that appears only transitively unless
-# it is ALSO present as a direct requirement or a constraint of the package
-# being installed. Verified live by installing incrementally: adding these
-# as [project.dependencies] would be semantically wrong (this module doesn't
-# use amplifier-foundation directly) and duplicating docs already say
-# "expressed as direct requirements OR CONSTRAINTS file" -- constraints are
-# the correct mechanism. If activation ever fails again with the same
-# "Package `X` was included as a URL dependency" error for a NEW package,
-# add that package's exact dependency string here too.
+# The activator invokes uv's pip-compatible resolver with `--no-sources`.
+# Keep the historical constraints needed by that path; the remaining URL
+# dependencies are declared directly above, so they must not be duplicated
+# here without an activator reproduction demonstrating a new requirement.
 constraint-dependencies = [
-    "amplifier-module-pipeline-runner @ git+https://github.com/microsoft/amplifier-bundle-attractor@main#subdirectory=modules/pipeline-runner",
-    "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main",
+    "amplifier-module-pipeline-runner @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/pipeline-runner",
+    "amplifier-foundation>=1.0.0",
 ]
 
 [tool.uv.sources]
@@ -76,6 +69,7 @@ constraint-dependencies = [
 # should add:
 #   amplifier-app-simulated-user-research = { git = "https://github.com/microsoft/amplifier-app-simulated-user-research", rev = "main" }
 amplifier-app-simulated-user-research = { path = "../..", editable = true }
+amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", branch = "main" }
 
 [tool.hatch.build.targets.wheel]
 packages = [

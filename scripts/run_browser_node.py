@@ -3,7 +3,7 @@
 
 WHY THIS EXISTS (read before editing):
 
-loop-agent's coding-agent loop (amplifier-bundle-attractor/modules/loop-agent)
+loop-agent's coding-agent loop (amplifier-bundle-dot-runner/modules/loop-agent)
 treats ANY assistant reply with no tool call as natural session completion:
 if the reply doesn't end in "?" (AWAITING_INPUT heuristic), the session goes
 straight to IDLE + session_end and process_input() RETURNS that text --

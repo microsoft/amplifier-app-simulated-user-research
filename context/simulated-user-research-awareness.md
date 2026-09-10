@@ -1,11 +1,11 @@
 ## Simulated User Research -- awareness
 
 This bundle exposes two agent-callable tools over the simulated-user-research
-attractor pipeline (see `pipelines/simulated-user-research.dot` -- that `.dot`
+dot-runner pipeline (see `pipelines/simulated-user-research.dot` -- that `.dot`
 file is the pipeline's logic home; these tools only orchestrate runs of it,
 they never reimplement its stages, prompts, or retry policy):
 
-- **`research_doctor`** -- environment diagnostics (the `attractor` CLI, the
+- **`research_doctor`** -- environment diagnostics (the `dot-runner` CLI, the
   `agent-browser` CLI, the LLM provider API key, and this repo's own
   pipeline/script files). Cheap, read-only, and safe to call any time --
   never runs the pipeline itself. Call this FIRST if you are unsure the

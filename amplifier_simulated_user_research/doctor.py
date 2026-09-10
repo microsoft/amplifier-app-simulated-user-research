@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .config import RoundConfig, _package_repo_root
 from .provenance import check_installed_build_staleness
-from .runner import resolve_attractor_resolution
+from .runner import resolve_dot_runner_resolution
 
 PROVIDER_KEY_ENV: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
@@ -46,20 +46,19 @@ class DoctorCheck:
     warn: bool = False
 
 
-def _check_attractor_cli(config: RoundConfig | None) -> DoctorCheck:
+def _check_dot_runner_cli(config: RoundConfig | None) -> DoctorCheck:
     """Resolve AND identity-validate the engine binary.
 
-    Presence is not identity: `attractor` is a generic binary name and an
-    unrelated tool of the same name shadowed ours on PATH once, turning a
-    doctor [OK] into an inscrutable argparse failure mid-run. Resolution
+    Presence is not identity: `dot-runner` must advertise the exact flags
+    this wrapper needs. Resolution
     now probes each candidate's `run --help` for the flags we pass, so this
     check reports OK only for a binary that can actually run our pipeline.
     """
-    attractor_checkout = config.attractor_checkout if config else None
+    dot_runner_checkout = config.dot_runner_checkout if config else None
     try:
-        resolution = resolve_attractor_resolution(attractor_checkout)
+        resolution = resolve_dot_runner_resolution(dot_runner_checkout)
     except RuntimeError as e:
-        return DoctorCheck("attractor CLI", False, str(e))
+        return DoctorCheck("dot-runner CLI", False, str(e))
 
     detail = f"resolved: {' '.join(resolution.command)} (via {resolution.source})"
     if resolution.source != "checkout":
@@ -72,23 +71,23 @@ def _check_attractor_cli(config: RoundConfig | None) -> DoctorCheck:
             + "; ".join(f"{path} -- {reason}" for path, reason in resolution.rejected)
         )
 
-    # Cheap shadow check (no extra probe): if PATH's first `attractor` is not
+    # Cheap shadow check (no extra probe): if PATH's first `dot-runner` is not
     # the binary we resolved, a different tool of the same name is sitting in
     # front of ours. Not a failure -- sibling-first resolution already routed
     # around it -- but the operator should know it is there.
     if resolution.source != "checkout":
-        path_first = shutil.which("attractor")
+        path_first = shutil.which("dot-runner")
         if path_first and Path(path_first) != Path(resolution.command[0]):
             notes.append(
-                f"note: PATH's first `attractor` is {path_first}, a different "
+                f"note: PATH's first `dot-runner` is {path_first}, a different "
                 f"binary; sibling-first resolution avoided it"
             )
 
     if notes:
         return DoctorCheck(
-            "attractor CLI", True, f"{detail}. " + " ".join(notes), warn=True
+            "dot-runner CLI", True, f"{detail}. " + " ".join(notes), warn=True
         )
-    return DoctorCheck("attractor CLI", True, detail)
+    return DoctorCheck("dot-runner CLI", True, detail)
 
 
 def _check_pipeline_runner_importable() -> DoctorCheck:
@@ -422,7 +421,7 @@ def doctor(config: RoundConfig | None = None) -> list[DoctorCheck]:
         config: Optional RoundConfig. When given, adds config-specific
             checks (personas_dir contents, the configured provider's key,
             the configured browser_bundle's registration). When omitted,
-            only the environment-wide checks run (attractor CLI, pipeline
+            only the environment-wide checks run (dot-runner CLI, pipeline
             module import, agent-browser, this repo's own files).
 
     Returns:
@@ -433,7 +432,7 @@ def doctor(config: RoundConfig | None = None) -> list[DoctorCheck]:
     provider = config.provider if config else "anthropic"
 
     checks = [
-        _check_attractor_cli(config),
+        _check_dot_runner_cli(config),
         _check_pipeline_runner_importable(),
         _check_agent_browser(),
         _check_browser_launchable(config),

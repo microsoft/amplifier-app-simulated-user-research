@@ -6,7 +6,7 @@ This module adds NO pipeline logic; the pipeline's `.dot` graph
 (pipelines/simulated-user-research.dot) remains the single logic home. Both
 tools here run their blocking lib call via `asyncio.to_thread` since
 `run_research_round` in particular can block for many minutes (a real
-attractor pipeline round with LLM + browser sessions).
+dot-runner pipeline round with LLM + browser sessions).
 """
 
 from __future__ import annotations
@@ -111,7 +111,7 @@ class ResearchDoctorTool:
     def description(self) -> str:
         return (
             "Run environment diagnostics for the simulated-user-research "
-            "pipeline: checks the attractor CLI, agent-browser, the LLM "
+            "pipeline: checks the dot-runner CLI, agent-browser, the LLM "
             "provider API key, and this repo's own pipeline/script files. "
             "Cheap and safe -- never runs the pipeline itself."
         )

@@ -19,8 +19,9 @@ WHAT IS RECORDED (a handful of scalars -- provenance, not telemetry):
     tool_version     installed distribution version of this package
     wrapper_sha256   sha256[:12] of scripts/run_browser_node.py
     pipeline_sha256  sha256[:12] of pipelines/simulated-user-research.dot
-    engine_source    how the attractor binary was resolved
-    engine_path      which attractor binary was used
+    engine_source    how the dot-runner binary was resolved
+    engine_path      which dot-runner binary was used
+    engine_revision  Git revision of an explicit dot-runner checkout
 
 The two file hashes are the load-bearing fields. `tool_version` alone is
 necessary but NOT sufficient: this repo does not bump the version per PR
@@ -39,6 +40,7 @@ provenance must never fail a run it is only describing.
 from __future__ import annotations
 
 import hashlib
+import subprocess
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -88,6 +90,22 @@ def _tool_version() -> str | None:
         return None
 
 
+def _git_revision(checkout: str) -> str | None:
+    """Return a checkout's resolved Git revision, or None when unavailable."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", checkout, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    revision = proc.stdout.strip()
+    return revision if proc.returncode == 0 and revision else None
+
+
 def harness_provenance(
     config: RoundConfig, *, include_engine: bool = True
 ) -> dict[str, str]:
@@ -96,10 +114,10 @@ def harness_provenance(
     Args:
         config: the round's config -- supplies the repo root whose files are
             hashed (`sur_repo_dir`, or the installed package's bundled tree).
-        include_engine: when True, also record which `attractor` binary was
+        include_engine: when True, also record which `dot-runner` binary was
             resolved and how. Callers on a hot interactive path should pass
             False: engine resolution identity-probes candidate binaries with
-            a subprocess (see runner.resolve_attractor_resolution), which is
+            a subprocess (see runner.resolve_dot_runner_resolution), which is
             free during a run (already resolved and cached) but not worth a
             subprocess just to print a triage warning.
 
@@ -128,11 +146,18 @@ def harness_provenance(
         try:
             # Imported lazily: runner imports config, and this keeps
             # provenance importable without pulling in the run machinery.
-            from .runner import resolve_attractor_resolution
+            from .runner import resolve_dot_runner_resolution
 
-            resolution = resolve_attractor_resolution(config.attractor_checkout)
+            resolution = resolve_dot_runner_resolution(config.dot_runner_checkout)
             provenance["engine_source"] = resolution.source
-            provenance["engine_path"] = resolution.command[0]
+            # A checkout resolution begins with `uv`, which is a launcher, not
+            # the engine. Record the complete invocation so provenance remains
+            # meaningful for both direct binaries and local checkouts.
+            provenance["engine_path"] = " ".join(resolution.command)
+            if config.dot_runner_checkout:
+                revision = _git_revision(config.dot_runner_checkout)
+                if revision:
+                    provenance["engine_revision"] = revision
         except Exception:
             # No usable engine is a real failure -- but it is run_round's
             # failure to report, loudly, with its own diagnosis. Provenance

@@ -41,9 +41,11 @@ Validation rejects the scaffold's REPLACE-ME placeholders until you edit them.
   subcommand launch-tests this for real and suggests a binary if one is installed.
 - **`ANTHROPIC_API_KEY`** in the environment (the pipeline's LLM provider key —
   unrelated to your app's own login credential in project.yaml).
-- The pipeline engine (`amplifier-bundle-attractor`'s pipeline-runner) arrives
-  automatically as a dependency, and the pipeline's data files (graph, scripts,
-  personas) ship inside the wheel — no source checkout needed. Register the
+- The pipeline engine (`amplifier-bundle-dot-runner`'s pipeline-runner) arrives
+  automatically as a dependency. It is installed from the Python-3.11-compatible
+  `modules/pipeline-runner` subdirectory rather than the root `amplifier-dot-runner`
+  distribution, and the pipeline's data files (graph, scripts, personas) ship
+  inside the wheel — no source checkout needed. Register the
   browser-session bundle once (the `doctor` subcommand prints the resolved yaml path):
   `amplifier bundle add file://<path>/bundles/browser-node-agent.yaml --name simulated-user-research-browser-node`.
 
@@ -58,12 +60,13 @@ amplifier-simulated-user-research run --config my-round/project.yaml
 amplifier-simulated-user-research triage --config my-round/project.yaml
 ```
 
-**Pure attractor pipeline** (composes into larger flows; the `.dot` is the logic
+**Pure dot-runner pipeline** (composes into larger flows; the `.dot` is the logic
 home — every other surface is a thin adapter over it):
 
 ```bash
-attractor run pipelines/simulated-user-research.dot --provider anthropic \
-  --on-human-gate fail --logs-root <dir> --cwd <seed_cwd> --param k=v ...
+dot-runner run pipelines/simulated-user-research.dot --worker coding-agent \
+  --provider anthropic --on-human-gate fail --logs-root <dir> --cwd <seed_cwd> \
+  --param k=v ...
 # required --params: target_url api_key seed_command personas_dir output_dir
 #   app_source_hint persona1 persona2 persona3 sur_repo_dir browser_bundle run_id
 # optional --param: reset_command (resets your app's state before seeding; omit
@@ -135,7 +138,7 @@ Process proven manually against a real product first, then encoded into
 `pipelines/simulated-user-research.dot` (the single logic home — see its header
 comments for the load-bearing design decisions); hardened through engineering,
 product, and design council reviews; built on
-[amplifier-bundle-attractor](https://github.com/microsoft/amplifier-bundle-attractor).
+[amplifier-bundle-dot-runner](https://github.com/microsoft/amplifier-bundle-dot-runner).
 
 ## Contributing
 

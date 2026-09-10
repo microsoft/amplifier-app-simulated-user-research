@@ -5,7 +5,7 @@
 #
 # The three persona nodes (+ capture node) in simulated-user-research.dot no
 # longer run as loop-agent-orchestrated box (LLM) nodes spawned BY the
-# attractor pipeline engine. Instead they run as shape=parallelogram (tool)
+# dot-runner pipeline engine. Instead they run as shape=parallelogram (tool)
 # nodes that shell out to `scripts/run_browser_node.py`, which itself invokes
 # `amplifier run -B <this-bundle> --mode single --output-format json "<instruction>"`
 # as a completely separate, single-shot Amplifier session per node execution.
@@ -21,9 +21,8 @@
 # for it to end. This bundle is what that single-shot session runs under.
 #
 # This is a THIN, SELF-CONTAINED composition -- NOT a fork of the shipped
-# attractor-bundle agent yamls (agents/attractor-agent-anthropic.yaml etc in
-# amplifier-bundle-attractor). It intentionally does NOT include
-# behaviors/attractor-core's tool-report-outcome or the pipeline-progress /
+# dot-runner agent yaml. It intentionally does NOT include
+# pipeline-internal tool-report-outcome or the pipeline-progress /
 # pipeline-observability hooks -- those exist for INSIDE-pipeline nodes
 # (report_outcome routing, pipeline:* event emission) which have no meaning
 # for a bare single-shot session invoked from a shell subprocess. Keeping
@@ -68,7 +67,7 @@ providers:
 session:
   orchestrator:
     module: loop-agent
-    source: git+https://github.com/microsoft/amplifier-bundle-attractor@main#subdirectory=modules/loop-agent
+    source: git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/loop-agent
     config:
       max_tool_rounds_per_input: 60
       default_command_timeout_ms: 120000
@@ -87,6 +86,6 @@ tools:
     source: git+https://github.com/microsoft/amplifier-module-tool-search@main
 
 # Layer-1 base prompt is supplied by loop-agent's provider default
-# (context/system-anthropic.md, resolved from the attractor-bundle module's
+# (context/system-anthropic.md, resolved from the dot-runner module's
 # own installed location -- see loop-agent's _resolve_system_prompt_file).
 # No system_prompt_file override needed here.

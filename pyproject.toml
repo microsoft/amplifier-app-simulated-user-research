@@ -22,9 +22,11 @@ classifiers = [
     "Topic :: Software Development :: Testing",
 ]
 dependencies = [
-    # The engine this lib orchestrates (its `attractor` console script).
-    "amplifier-module-pipeline-runner @ git+https://github.com/microsoft/amplifier-bundle-attractor@main#subdirectory=modules/pipeline-runner",
-    # The next three are pipeline-runner's OWN transitive git/URL closure,
+    # The engine this lib orchestrates (its `dot-runner` console script).
+    # Use the module, not amplifier-dot-runner's root distribution: the module
+    # supports Python 3.11 while the root package requires Python 3.12.
+    "amplifier-module-pipeline-runner @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/pipeline-runner",
+    # The following are pipeline-runner's OWN transitive git/URL closure,
     # declared DIRECTLY here even though this lib never imports them. This is
     # not redundancy -- it is required by the Amplifier bundle activator, which
     # installs a bundle's package with `uv pip install -e . --no-sources
@@ -39,9 +41,14 @@ dependencies = [
     # exact command. Same constraint documented in AGENTS.md pitfall 4 and
     # applied in modules/tool-simulated-user-research/pyproject.toml. If a NEW
     # package ever appears in that error, add its exact spec here too.
-    "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation@main",
-    "amplifier-module-loop-pipeline @ git+https://github.com/microsoft/amplifier-bundle-attractor@main#subdirectory=modules/loop-pipeline",
-    "amplifier-unified-llm-client @ git+https://github.com/microsoft/amplifier-bundle-attractor@main#subdirectory=modules/unified-llm-client",
+    # Match pipeline-runner's published foundation requirement shape. A direct
+    # URL conflicts with its branch source during resolution.
+    "amplifier-foundation>=1.0.0",
+    "amplifier-module-loop-pipeline[remote] @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/loop-pipeline",
+    "amplifier-unified-llm-client @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/unified-llm-client",
+    "amplifier-module-remote-source @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/remote-source",
+    # `--worker coding-agent` requires this worker module at runtime.
+    "amplifier-module-loop-agent @ git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/loop-agent",
     "pyyaml>=6.0",
 ]
 
@@ -77,6 +84,11 @@ exclude = ["amplifier_simulated_user_research/tests"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+[tool.uv.sources]
+# Keep the application and dot-runner engine on the same floating Foundation
+# branch while matching pipeline-runner's named-requirement declaration shape.
+amplifier-foundation = { git = "https://github.com/microsoft/amplifier-foundation", branch = "main" }
 
 [dependency-groups]
 dev = [

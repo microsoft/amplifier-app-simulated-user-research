@@ -108,12 +108,16 @@ class RoundConfig:
     browser_executable_path: str | None = None
     browser_args: str | None = None
     # Optional escape hatch for local development against an unmerged /
-    # not-yet-released attractor checkout. When set, the runner shells out
-    # via `uv run --project <attractor_checkout>/modules/pipeline-runner
-    # attractor ...` instead of invoking the `attractor` console script this
+    # not-yet-released dot-runner checkout. When set, the runner shells out
+    # via `uv run --project <dot_runner_checkout>/modules/pipeline-runner
+    # dot-runner ...` instead of invoking the `dot-runner` console script this
     # package installs as a normal git-subdirectory dependency. Leave unset
     # (the default) for normal use.
-    attractor_checkout: str | None = None
+    dot_runner_checkout: str | None = None
+    # Compatibility-only input slot for callers that constructed RoundConfig
+    # before the dot-runner migration. It is never serialized; nonempty values
+    # fail validation with an explicit migration instruction.
+    attractor_checkout: str | None = field(default=None, repr=False)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "RoundConfig":
@@ -137,6 +141,17 @@ class RoundConfig:
                 f"{p}: expected a YAML mapping at the top level, got {type(raw).__name__}"
             )
 
+        # `attractor_checkout: null` appeared in earlier generated configs.
+        # Consume that inert legacy spelling so an otherwise-valid config keeps
+        # loading, but never silently route a nonempty checkout to a retired
+        # engine. Operators must explicitly migrate it to dot_runner_checkout.
+        legacy_checkout = raw.pop("attractor_checkout", None)
+        if legacy_checkout not in (None, ""):
+            raise ValueError(
+                f"{p}: attractor_checkout is retired; use dot_runner_checkout "
+                "with a local amplifier-bundle-dot-runner checkout instead"
+            )
+
         known_fields = {f for f in cls.__dataclass_fields__}
         unknown = set(raw) - known_fields
         if unknown:
@@ -152,7 +167,7 @@ class RoundConfig:
         This is the TARGET APPLICATION's login credential (what the persona
         browser sessions use to authenticate) -- it is unrelated to the LLM
         provider's API key (e.g. ANTHROPIC_API_KEY), which must separately
-        be present in the process environment for the `attractor` CLI's own
+        be present in the process environment for the `dot-runner` CLI's own
         preflight check (see `doctor.py`).
 
         Raises:
@@ -234,6 +249,11 @@ class RoundConfig:
         if self.provider not in {"anthropic", "openai", "gemini"}:
             problems.append(
                 f"unknown provider {self.provider!r} (known: anthropic, openai, gemini)"
+            )
+        if self.attractor_checkout not in (None, ""):
+            problems.append(
+                "attractor_checkout is retired; use dot_runner_checkout with a "
+                "local amplifier-bundle-dot-runner checkout instead"
             )
 
         sentinel_fields = self._fields_with_sentinels()
@@ -325,5 +345,5 @@ class RoundConfig:
             "logs_root": self.logs_root,
             "browser_executable_path": self.browser_executable_path,
             "browser_args": self.browser_args,
-            "attractor_checkout": self.attractor_checkout,
+            "dot_runner_checkout": self.dot_runner_checkout,
         }

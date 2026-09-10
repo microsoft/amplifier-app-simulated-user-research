@@ -40,7 +40,7 @@ personas:
   - ken       # privacy-adversarial evaluator
 
 # Where all round artifacts land (reports, spec, findings.json,
-# rounds.jsonl ledger, .attractor-logs/). One directory per round.
+# rounds.jsonl ledger, .dot-runner-logs/). One directory per round.
 output_dir: /REPLACE_ME/path/for/round-artifacts
 
 # Path(s) the design reviewers read to cross-reference screenshots against

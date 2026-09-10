@@ -402,6 +402,36 @@ class TestRoundConfigFromYaml:
         with pytest.raises(ValueError, match="unknown config key"):
             RoundConfig.from_yaml(config_path)
 
+    def test_null_legacy_attractor_checkout_is_consumed(self, tmp_path):
+        data = _minimal_kwargs()
+        data["attractor_checkout"] = None
+        config_path = tmp_path / "project.yaml"
+        config_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+        config = RoundConfig.from_yaml(config_path)
+
+        assert config.dot_runner_checkout is None
+
+    def test_nonempty_legacy_attractor_checkout_fails_loud(self, tmp_path):
+        data = _minimal_kwargs()
+        data["attractor_checkout"] = "/old/attractor"
+        config_path = tmp_path / "project.yaml"
+        config_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="attractor_checkout is retired"):
+            RoundConfig.from_yaml(config_path)
+
+    def test_dot_runner_checkout_loads_and_round_trips(self, tmp_path):
+        config = RoundConfig(**_minimal_kwargs(dot_runner_checkout="/src/dot-runner"))
+        config_path = tmp_path / "project.yaml"
+        config_path.write_text(yaml.safe_dump(config.to_yaml_dict()), encoding="utf-8")
+
+        assert RoundConfig.from_yaml(config_path).dot_runner_checkout == "/src/dot-runner"
+
+    def test_programmatic_nonempty_legacy_checkout_fails_validation(self):
+        config = RoundConfig(**_minimal_kwargs(attractor_checkout="/old/attractor"))
+        assert any("attractor_checkout is retired" in p for p in config.validate())
+
 
 class TestRoundConfigToYamlDict:
     def test_round_trips_through_yaml(self, tmp_path):

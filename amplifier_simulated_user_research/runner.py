@@ -1,8 +1,8 @@
-"""run_round() -- orchestrate one `attractor run` invocation of the pipeline.
+"""run_round() -- orchestrate one `dot-runner run` invocation of the pipeline.
 
-This module builds and executes the exact command proven end-to-end
-manually: `attractor run <dot> --cwd <seed_cwd> --param k=v ... --provider
-<provider> --logs-root <dir> --on-human-gate <policy>`. It does NOT
+This module builds and executes the exact command proven end-to-end:
+`dot-runner run <dot> --worker coding-agent --cwd <seed_cwd> --param k=v ...
+--provider <provider> --logs-root <dir> --on-human-gate <policy>`. It does NOT
 reimplement any pipeline stage, retry policy, or prompt -- all of that
 lives in pipelines/simulated-user-research.dot (see the DRY rule in the
 amplifier-tool-leverage-patterns skill). This module's only job is: build
@@ -32,6 +32,7 @@ import os
 import re
 import subprocess
 import sys
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -58,28 +59,13 @@ RUN_ID_PATTERN = re.compile(r"^r-\d{8}-\d{6}$")
 # "stop" is the documented choice; "fail" is kept as a deprecated alias
 # ("stop" describes what actually happens: the pipeline pauses at the
 # approval gate, which is the normal ending for an unattended run).
-# "console" answers the gate interactively in the current terminal -- it
-# requires an engine with console-gate support (upstream branch
-# feat/pipeline-runner-console-gate; NOT yet on @main, so the pinned engine
-# dep rejects it with an argparse exit 2 -- see the fail-loud handling in
-# run_round).
+# "console" answers the gate interactively in the current terminal.
 _GATE_POLICY_TO_ENGINE = {
     "stop": "fail",
     "fail": "fail",  # deprecated alias for "stop"
     "auto-approve": "auto-approve",
     "console": "console",
 }
-
-_CONSOLE_GATE_REJECTED_MSG = (
-    "the engine rejected `--on-human-gate console` (argparse usage error, "
-    "exit 2): the installed amplifier-module-pipeline-runner predates "
-    "console-gate support (the feature is on the upstream branch "
-    "feat/pipeline-runner-console-gate, not yet on @main -- which is what "
-    "this package pins). Two fixes: set `attractor_checkout` in project.yaml "
-    "to a local amplifier-bundle-attractor checkout that has the console-gate "
-    "feature, or wait for the upstream merge and reinstall (`uv sync`)."
-)
-
 
 def generate_run_id(now: _dt.datetime | None = None) -> str:
     """Return a fresh run id: ``r-YYYYMMDD-HHMMSS`` (local time)."""
@@ -115,11 +101,12 @@ class RoundResult:
             `research-spec.md` exists and the gate policy was "stop"
             (or its deprecated alias "fail"), which is SUCCESS for an
             unattended round), or "failed" (something else went wrong --
-            see stderr_tail/attractor_status).
-        exit_code: The `attractor` subprocess's own exit code.
-        attractor_status: The raw `status` field attractor's CLI prints as
-            its final JSON line, if one could be parsed (None if the
-            subprocess crashed before printing it).
+            see stderr_tail/engine_status).
+        exit_code: The `dot-runner` subprocess's own exit code.
+        attractor_status: Deprecated compatibility alias for engine_status.
+        engine_status: The raw `status` field dot-runner's CLI prints as its
+            final JSON line, if one could be parsed (None if the subprocess
+            crashed before printing it).
         gate_reached: True iff the synthesis artifact exists at a
             meaningful size AND the run stopped short of exit_code 0 under
             a "stop"/"fail" gate policy -- i.e. the pipeline did its job
@@ -149,6 +136,11 @@ class RoundResult:
     stdout_tail: str = ""
     stderr_tail: str = ""
 
+    @property
+    def engine_status(self) -> str | None:
+        """The dot-runner status; ``attractor_status`` remains an API alias."""
+        return self.attractor_status
+
 
 def _dot_path(config: RoundConfig) -> Path:
     return config.resolved_sur_repo_dir() / "pipelines" / "simulated-user-research.dot"
@@ -156,10 +148,9 @@ def _dot_path(config: RoundConfig) -> Path:
 
 # --- Engine binary resolution -------------------------------------------
 #
-# `attractor` is a GENERIC binary name: other, unrelated packages ship a
-# command by that name too (a real incident -- a foreign `attractor` earlier
-# on PATH swallowed our invocation and died with an inscrutable argparse
-# "unrecognized arguments" error). Two consequences encoded below:
+# Resolve the dot-runner binary from the running environment first. The
+# sibling-first ordering keeps the installed dependency authoritative over a
+# coincidental PATH executable; every candidate is identity-probed.
 #
 #   1. ORDER: the console script installed alongside US (a sibling of the
 #      running interpreter) is by construction the engine we depend on
@@ -173,31 +164,36 @@ def _dot_path(config: RoundConfig) -> Path:
 # Both checks are cheap (one --help per candidate, cached per process).
 
 # The flags run_round() actually passes. A binary that doesn't advertise all
-# of them cannot be our engine, whatever it is called.
-_REQUIRED_ENGINE_FLAGS = ("--param", "--logs-root", "--on-human-gate")
+# of them cannot run this pipeline.
+_REQUIRED_ENGINE_FLAGS = (
+    "--param",
+    "--provider",
+    "--worker",
+    "--logs-root",
+    "--cwd",
+    "--on-human-gate",
+)
 
-# Probe timeout: `attractor run --help` is argparse-fast; anything slower is
+# Probe timeout: `dot-runner run --help` is argparse-fast; anything slower is
 # a broken/hanging binary we should reject rather than wait on.
 _ENGINE_PROBE_TIMEOUT_S = 20
 
 _ENGINE_REMEDY = (
-    "The engine is the `attractor` console script from "
+    "The engine is the `dot-runner` console script from "
     "amplifier-module-pipeline-runner (installed as a dependency of this "
     "package). Reinstall this tool (`uv tool install --force ...` / `uv "
-    "sync`) so the engine lands beside it, or set `attractor_checkout` in "
-    "project.yaml to a local amplifier-bundle-attractor checkout. NOTE: an "
-    "unrelated package may ship its own binary named `attractor` earlier on "
-    "PATH -- a foreign binary is rejected, not used."
+    "sync`) so the engine lands beside it, or set `dot_runner_checkout` in "
+    "project.yaml to a local amplifier-bundle-dot-runner checkout."
 )
 
 
 @dataclass(frozen=True)
-class AttractorResolution:
+class DotRunnerResolution:
     """The resolved engine invocation plus why other candidates lost.
 
     Attributes:
-        command: argv prefix that runs the engine (e.g. ``["/path/attractor"]``
-            or the ``uv run --project ... attractor`` form).
+        command: argv prefix that runs the engine (e.g. ``["/path/dot-runner"]``
+            or the ``uv run --project ... dot-runner`` form).
         source: how it was resolved -- "checkout" (explicit override),
             "interpreter-sibling", or "PATH".
         rejected: ``(path, reason)`` for every candidate probed and refused,
@@ -210,13 +206,13 @@ class AttractorResolution:
     rejected: tuple[tuple[str, str], ...] = ()
 
 
-# Per-process cache keyed by the attractor_checkout override (or "" for none):
+# Per-process cache keyed by the dot_runner_checkout override (or "" for none):
 # resolution costs a subprocess probe, and a single process may resolve many
 # times (run_round + doctor + tests).
-_RESOLUTION_CACHE: dict[str, AttractorResolution] = {}
+_RESOLUTION_CACHE: dict[str, DotRunnerResolution] = {}
 
 
-def reset_attractor_resolution_cache() -> None:
+def reset_dot_runner_resolution_cache() -> None:
     """Clear the per-process resolution cache (tests; PATH changes)."""
     _RESOLUTION_CACHE.clear()
 
@@ -225,7 +221,7 @@ def _candidate_binaries() -> list[Path]:
     """Engine-binary candidates, best first, de-duplicated by real path.
 
     Order: the running interpreter's sibling (our own environment) first,
-    then every `attractor` found on PATH in PATH order.
+    then every `dot-runner` found on PATH in PATH order.
     """
     candidates: list[Path] = []
     seen: set[Path] = set()
@@ -240,34 +236,34 @@ def _candidate_binaries() -> list[Path]:
         seen.add(key)
         candidates.append(path)
 
-    sibling = Path(sys.executable).parent / "attractor"
+    sibling = Path(sys.executable).parent / "dot-runner"
     if sibling.is_file():
         _add(sibling)
 
     for entry in os.environ.get("PATH", "").split(os.pathsep):
         if not entry:
             continue
-        candidate = Path(entry) / "attractor"
+        candidate = Path(entry) / "dot-runner"
         if candidate.is_file() and os.access(candidate, os.X_OK):
             _add(candidate)
 
     return candidates
 
 
-def validate_attractor_binary(binary: str | Path) -> tuple[bool, str]:
-    """Probe a candidate: is this OUR engine?
+def validate_dot_runner_command(command: list[str]) -> tuple[bool, str]:
+    """Probe an engine command for the exact CLI interface this adapter needs.
 
-    Runs ``<binary> run --help`` and requires every flag in
+    Runs ``<command> run --help`` and requires every flag in
     ``_REQUIRED_ENGINE_FLAGS`` to appear in its help output. This is the
     honest check -- it tests the exact interface `run_round()` depends on,
-    rather than trusting a filename.
+    rather than trusting a filename or checkout path.
 
     Returns:
         (ok, reason) -- `reason` explains the rejection when ok is False.
     """
     try:
         proc = subprocess.run(
-            [str(binary), "run", "--help"],
+            [*command, "run", "--help"],
             capture_output=True,
             text=True,
             timeout=_ENGINE_PROBE_TIMEOUT_S,
@@ -285,46 +281,91 @@ def validate_attractor_binary(binary: str | Path) -> tuple[bool, str]:
     if missing:
         return False, (
             f"`run --help` does not advertise {', '.join(missing)} -- this is a "
-            f"different tool that happens to be named `attractor`"
+            f"different tool that is not `dot-runner`"
         )
     return True, "advertises the engine's run flags"
 
 
-def resolve_attractor_resolution(
-    attractor_checkout: str | None = None,
-) -> AttractorResolution:
+def validate_dot_runner_binary(binary: str | Path) -> tuple[bool, str]:
+    """Probe a dot-runner executable candidate for the required CLI."""
+    return validate_dot_runner_command([str(binary)])
+
+
+def resolve_dot_runner_resolution(
+    dot_runner_checkout: str | None = None,
+) -> DotRunnerResolution:
     """Resolve the engine invocation, validating identity. Cached per process.
 
     Priority:
-      1. `attractor_checkout` (explicit operator override) -- shells
-         ``uv run --project <checkout>/modules/pipeline-runner attractor``.
-         Trusted without a probe: it is explicit, and its directory shape is
-         verified. (A `uv run` probe would also pay a full resolve.)
-      2. The running interpreter's sibling `attractor` -- by construction the
+      1. `dot_runner_checkout` (explicit operator override) -- shells
+         ``uv run --project <checkout>/modules/pipeline-runner dot-runner``.
+         Its project metadata and executable interface are verified before use.
+      2. The running interpreter's sibling `dot-runner` -- by construction the
          engine installed alongside this package.
-      3. Each `attractor` on PATH, in PATH order.
-    Candidates 2 and 3 must pass `validate_attractor_binary`.
+      3. Each `dot-runner` on PATH, in PATH order.
+    Candidates 2 and 3 must pass `validate_dot_runner_binary`.
 
     Raises:
         RuntimeError: if no candidate validates -- naming every candidate
             found, why each was rejected, and the remedy.
     """
-    cache_key = attractor_checkout or ""
+    cache_key = dot_runner_checkout or ""
     cached = _RESOLUTION_CACHE.get(cache_key)
     if cached is not None:
         return cached
 
-    if attractor_checkout:
+    if dot_runner_checkout:
         runner_dir = (
-            Path(attractor_checkout).expanduser() / "modules" / "pipeline-runner"
+            Path(dot_runner_checkout).expanduser() / "modules" / "pipeline-runner"
         )
-        if not runner_dir.is_dir():
+        project_file = runner_dir / "pyproject.toml"
+        if not project_file.is_file():
             raise RuntimeError(
-                f"attractor_checkout={attractor_checkout!r} does not contain "
-                f"modules/pipeline-runner (looked for {runner_dir})"
+                f"dot_runner_checkout={dot_runner_checkout!r} does not contain "
+                f"modules/pipeline-runner/pyproject.toml (looked for {project_file})"
             )
-        resolution = AttractorResolution(
-            command=["uv", "run", "--project", str(runner_dir), "attractor"],
+        try:
+            project_data = tomllib.loads(project_file.read_text(encoding="utf-8"))
+            project = project_data["project"]
+            project_name = project["name"]
+            script = project.get("scripts", {}).get("dot-runner")
+            package_enabled = project_data.get("tool", {}).get("uv", {}).get("package")
+        except (KeyError, OSError, tomllib.TOMLDecodeError) as exc:
+            raise RuntimeError(
+                f"dot_runner_checkout={dot_runner_checkout!r} has an unreadable "
+                f"pipeline-runner project at {project_file}: {exc}"
+            ) from exc
+        if project_name != "amplifier-module-pipeline-runner":
+            raise RuntimeError(
+                f"dot_runner_checkout={dot_runner_checkout!r} has pipeline-runner "
+                f"distribution {project_name!r}, expected "
+                "'amplifier-module-pipeline-runner'"
+            )
+        if script != "amplifier_module_pipeline_runner.cli:main":
+            raise RuntimeError(
+                f"dot_runner_checkout={dot_runner_checkout!r} has an invalid "
+                "pipeline-runner dot-runner entry point; expected "
+                "'amplifier_module_pipeline_runner.cli:main'"
+            )
+        source_entry_point = (
+            runner_dir / "amplifier_module_pipeline_runner" / "cli.py"
+        )
+        if package_enabled is not True or not source_entry_point.is_file():
+            raise RuntimeError(
+                f"dot_runner_checkout={dot_runner_checkout!r} is not an "
+                "installable pipeline-runner package (requires "
+                "tool.uv.package = true and "
+                "amplifier_module_pipeline_runner/cli.py)"
+            )
+        command = ["uv", "run", "--project", str(runner_dir), "dot-runner"]
+        ok, reason = validate_dot_runner_command(command)
+        if not ok:
+            raise RuntimeError(
+                f"dot_runner_checkout={dot_runner_checkout!r} cannot run the "
+                f"required dot-runner interface: {reason}"
+            )
+        resolution = DotRunnerResolution(
+            command=command,
             source="checkout",
         )
         _RESOLUTION_CACHE[cache_key] = resolution
@@ -333,12 +374,12 @@ def resolve_attractor_resolution(
     rejected: list[tuple[str, str]] = []
     sibling_dir = Path(sys.executable).parent
     for candidate in _candidate_binaries():
-        ok, reason = validate_attractor_binary(candidate)
+        ok, reason = validate_dot_runner_binary(candidate)
         if ok:
             source = (
                 "interpreter-sibling" if candidate.parent == sibling_dir else "PATH"
             )
-            resolution = AttractorResolution(
+            resolution = DotRunnerResolution(
                 command=[str(candidate)],
                 source=source,
                 rejected=tuple(rejected),
@@ -350,33 +391,36 @@ def resolve_attractor_resolution(
     if rejected:
         found = "; ".join(f"{path} -- {reason}" for path, reason in rejected)
         raise RuntimeError(
-            f"no usable attractor engine found. Candidates probed and rejected: "
+            f"no usable dot-runner engine found. Candidates probed and rejected: "
             f"{found}. {_ENGINE_REMEDY}"
         )
     raise RuntimeError(
-        f"attractor console script not found next to the current Python "
+        f"dot-runner console script not found next to the current Python "
         f"interpreter ({sibling_dir}) or anywhere on PATH. {_ENGINE_REMEDY}"
     )
 
 
-def resolve_attractor_command(attractor_checkout: str | None = None) -> list[str]:
-    """Return the argv prefix that runs the engine's `attractor` CLI.
+def resolve_dot_runner_command(dot_runner_checkout: str | None = None) -> list[str]:
+    """Return the argv prefix that runs the engine's `dot-runner` CLI.
 
-    Thin accessor over `resolve_attractor_resolution` (which owns ordering,
+    Thin accessor over `resolve_dot_runner_resolution` (which owns ordering,
     identity validation, and caching -- see that function and the module's
     "Engine binary resolution" comment block).
 
     Raises:
         RuntimeError: if no candidate validates as our engine.
     """
-    return resolve_attractor_resolution(attractor_checkout).command
+    # Resolution results are cached. Return a copy because callers extend the
+    # argv prefix with their invocation-specific arguments.
+    return list(resolve_dot_runner_resolution(dot_runner_checkout).command)
 
 
 def _build_command(
     config: RoundConfig, *, engine_gate_policy: str, logs_root: Path, run_id: str
 ) -> list[str]:
-    cmd = resolve_attractor_command(config.attractor_checkout)
+    cmd = resolve_dot_runner_command(config.dot_runner_checkout)
     cmd += ["run", str(_dot_path(config))]
+    cmd += ["--worker", "coding-agent"]
     cmd += ["--cwd", str(Path(config.seed_cwd).expanduser())]
     cmd += ["--provider", config.provider]
     cmd += ["--logs-root", str(logs_root)]
@@ -388,16 +432,16 @@ def _build_command(
     return cmd
 
 
-def _parse_attractor_status(stdout: str) -> str | None:
-    """Find the `attractor: status=...` line the CLI always prints.
+def _parse_engine_status(stdout: str) -> str | None:
+    """Find the `dot-runner: status=...` line the CLI always prints.
 
     More robust than parsing the trailing JSON blob (which is on its own
     line but easy to mis-locate if stdout is interleaved) -- this exact
     prefix is printed unconditionally by `cmd_run` before anything else.
     """
     for line in stdout.splitlines():
-        if line.startswith("attractor: status="):
-            return line[len("attractor: status=") :].strip()
+        if line.startswith("dot-runner: status="):
+            return line[len("dot-runner: status=") :].strip()
     # Fall back to the JSON summary line (find the last '{' start, like
     # run_browser_node.py does for the analogous single-shot-session case).
     brace_idx = stdout.rfind("{")
@@ -432,7 +476,7 @@ def _collect_artifacts(output_dir: Path, config: RoundConfig) -> dict[str, Path]
 def _mine_per_stage_wall_clock(logs_dir: Path) -> dict[str, float] | None:
     """Mine per-stage wall-clock seconds from the engine's per-node logs.
 
-    The attractor engine writes ``<logs_dir>/<node_id>/status.json`` with a
+    The dot-runner engine writes ``<logs_dir>/<node_id>/status.json`` with a
     ``duration_ms`` field for every node it executed. That is the honest,
     machine-recorded source -- we read it rather than re-deriving timings
     from file mtimes. Nodes without a readable ``duration_ms`` are simply
@@ -497,12 +541,13 @@ def run_round(
     timeout_s: float | None = None,
     run_id: str | None = None,
 ) -> RoundResult:
-    """Run one simulated-user-research round via the `attractor` CLI.
+    """Run one simulated-user-research round via the `dot-runner` CLI.
 
     Builds and executes the same invocation shape proven manually:
-    `attractor run <dot> --cwd <seed_cwd> --param k=v ... --provider
-    <provider> --logs-root <dir> --on-human-gate <policy>`, then appends
-    one record to the ``rounds.jsonl`` ledger in output_dir.
+    `dot-runner run <dot> --worker coding-agent --cwd <seed_cwd> --param
+    k=v ... --provider <provider> --logs-root <dir> --on-human-gate
+    <policy>`, then appends one record to the ``rounds.jsonl`` ledger in
+    output_dir.
 
     Args:
         config: A validated RoundConfig (call `config.validate()` first if
@@ -512,10 +557,9 @@ def run_round(
             normal ending for an unattended run: read research-spec.md,
             then re-run interactively to answer the gate), "fail"
             (deprecated alias for "stop"), "auto-approve", or "console"
-            (answer the gate interactively in this terminal; requires an
-            engine with console-gate support -- see _CONSOLE_GATE_REJECTED_MSG.
-            In console mode the subprocess INHERITS stdin/stdout/stderr,
-            so attractor_status/stdout_tail/stderr_tail are empty).
+            (answer the gate interactively in this terminal. In console mode
+            the subprocess INHERITS stdin/stdout/stderr, so
+            engine_status/stdout_tail/stderr_tail are empty).
         timeout_s: Optional subprocess-level backstop. None (default)
             means no additional timeout beyond the pipeline's own
             per-node timeouts.
@@ -529,7 +573,7 @@ def run_round(
     Raises:
         ValueError: if `config.validate()` reports problems, the gate
             policy is unknown, or an explicit run_id is malformed.
-        RuntimeError: if the `attractor` console script cannot be located.
+        RuntimeError: if the `dot-runner` console script cannot be located.
     """
     problems = config.validate()
     if problems:
@@ -553,7 +597,7 @@ def run_round(
     logs_base = (
         Path(config.logs_root).expanduser()
         if config.logs_root
-        else output_dir / ".attractor-logs"
+        else output_dir / ".dot-runner-logs"
     )
     logs_dir = logs_base / run_id
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -575,14 +619,14 @@ def run_round(
         # CONSOLE-MODE PLUMBING TRADE (deliberate): the engine's
         # ConsoleInterviewer must talk to the human, so the subprocess
         # INHERITS stdin/stdout/stderr (no capture_output, no pipes). That
-        # means we cannot parse `attractor: status=...` from stdout -- and
+        # means we cannot parse `dot-runner: status=...` from stdout -- and
         # we deliberately do NOT try to tee/parse interleaved interactive
         # output (fragile, and any buffering layer risks breaking the
         # prompt/answer round-trip). Post-run facts come from ground truth
         # we already have instead: the run_id we generated, artifacts by
         # listing output_dir, per-stage timings from the engine's own
         # status.json logs, and status from the exit code. Cost:
-        # attractor_status/stdout_tail/stderr_tail are empty for console
+        # engine_status/stdout_tail/stderr_tail are empty for console
         # runs -- the human already saw the output live.
         proc = subprocess.run(
             command,
@@ -605,15 +649,7 @@ def run_round(
         stderr_text = proc.stderr
     ts_end = _dt.datetime.now(_dt.timezone.utc)
 
-    if console_mode and proc.returncode == 2:
-        # argparse usage error from the engine CLI: the invocation never ran
-        # a round (choice rejected before any pipeline work), so no ledger
-        # record is written. Fail loud with the exact situation + fixes.
-        # The resolved binary is named so a shadowed/foreign `attractor` is
-        # diagnosable in one look (see "Engine binary resolution" above).
-        raise RuntimeError(f"{_CONSOLE_GATE_REJECTED_MSG} (engine: {command[0]})")
-
-    attractor_status = _parse_attractor_status(stdout_text)
+    engine_status = _parse_engine_status(stdout_text)
     artifacts = _collect_artifacts(output_dir, config)
 
     spec_present = SYNTHESIS_ARTIFACT in artifacts
@@ -655,7 +691,7 @@ def run_round(
         run_id=run_id,
         status=status,
         exit_code=proc.returncode,
-        attractor_status=attractor_status,
+        attractor_status=engine_status,
         gate_reached=gate_reached,
         artifacts=artifacts,
         logs_dir=logs_dir,
