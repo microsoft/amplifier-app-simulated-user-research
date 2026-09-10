@@ -135,7 +135,7 @@ class TestHarnessProvenance:
             )
 
         monkeypatch.setattr(
-            "amplifier_simulated_user_research.runner.resolve_attractor_resolution",
+            "amplifier_simulated_user_research.runner.resolve_dot_runner_resolution",
             exploding_resolution,
         )
 
@@ -147,18 +147,18 @@ class TestHarnessProvenance:
         assert "engine_source" not in provenance
 
     def test_engine_fields_recorded_when_resolvable(self, tmp_path, monkeypatch):
-        from amplifier_simulated_user_research.runner import AttractorResolution
+        from amplifier_simulated_user_research.runner import DotRunnerResolution
 
         monkeypatch.setattr(
-            "amplifier_simulated_user_research.runner.resolve_attractor_resolution",
-            lambda checkout: AttractorResolution(
-                command=["/venv/bin/attractor"], source="interpreter-sibling"
+            "amplifier_simulated_user_research.runner.resolve_dot_runner_resolution",
+            lambda checkout: DotRunnerResolution(
+                command=["/venv/bin/dot-runner"], source="interpreter-sibling"
             ),
         )
 
         provenance = harness_provenance(_config(_fake_repo(tmp_path)))
 
-        assert provenance["engine_path"] == "/venv/bin/attractor"
+        assert provenance["engine_path"] == "/venv/bin/dot-runner"
         assert provenance["engine_source"] == "interpreter-sibling"
 
     def test_unresolvable_engine_omits_fields_without_raising(
@@ -168,10 +168,10 @@ class TestHarnessProvenance:
         just records less, and never raises while describing a run."""
 
         def no_engine(checkout):
-            raise RuntimeError("no usable attractor engine found")
+            raise RuntimeError("no usable dot-runner engine found")
 
         monkeypatch.setattr(
-            "amplifier_simulated_user_research.runner.resolve_attractor_resolution",
+            "amplifier_simulated_user_research.runner.resolve_dot_runner_resolution",
             no_engine,
         )
 
@@ -219,8 +219,8 @@ class TestProvenanceDifferences:
         """Engine path/source vary by machine and venv -- comparing them
         would train people to ignore a warning that should be rare."""
         differences = provenance_differences(
-            {"wrapper_sha256": "same", "engine_path": "/a/attractor"},
-            {"wrapper_sha256": "same", "engine_path": "/b/attractor"},
+            {"wrapper_sha256": "same", "engine_path": "/a/dot-runner"},
+            {"wrapper_sha256": "same", "engine_path": "/b/dot-runner"},
         )
         assert differences == []
 

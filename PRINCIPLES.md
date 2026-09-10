@@ -43,7 +43,7 @@ skip-as-done (the byte-floor entombing bug), never block forever.
 
 Preflight checks validate **capability, not presence**: an external dependency is
 healthy only if it can do the specific thing we need (the browser actually
-launches; the `attractor` binary actually advertises our flags). A check that
+launches; the `dot-runner` binary actually advertises our flags). A check that
 merely confirms a file exists manufactures a false [OK] and moves the failure
 somewhere far less legible — the diagnosis belongs at the earliest honest moment.
 
@@ -57,8 +57,9 @@ ships.
 
 ## 6. Upstream linkage
 
-The engine is the attractor pipeline-runner (microsoft/amplifier-bundle-attractor,
-canonical spec: strongdm/attractor). Intentional local deltas: browser stages as
+The engine is the dot-runner pipeline-runner
+(microsoft/amplifier-bundle-dot-runner, canonical spec: strongdm/attractor).
+Intentional local deltas: browser stages as
 single-shot tool nodes (see AGENTS.md pitfall #1); freeform gate feedback rides the
 bundle's declared EXTENSIONS §19. When engine behavior is ambiguous, read the
 canonical spec before working around it — two upstream gaps found here became

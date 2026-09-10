@@ -1,6 +1,6 @@
 // simulated-user-research.dot
 // ============================================================================
-// Simulated User Research pipeline — attractor DOT graph.
+// Simulated User Research pipeline — dot-runner DOT graph.
 //
 // Encodes the proven manual process end-to-end:
 //   0. RESET            (tool)      OPTIONAL project-supplied reset command,
@@ -29,7 +29,7 @@
 //   driving `agent-browser` directly via bash inside that session. That
 //   design is STILL correct in principle (zero-ceremony, single thread/
 //   context) but has one fatal, UN-FIXABLE-AT-THE-PROMPT-LEVEL flaw:
-//   loop-agent's coding-agent loop (amplifier-bundle-attractor/modules/
+//   loop-agent's coding-agent loop (amplifier-bundle-dot-runner/modules/
 //   loop-agent/amplifier_module_loop_agent/agent_session.py.process_input)
 //   treats ANY assistant reply with no tool call as natural session
 //   completion — hardcoded, not gated by any SessionConfig field (checked
@@ -73,7 +73,7 @@
 //   hard-stopping that branch (synthesis went on to correctly report it
 //   under "Missing inputs" — the epistemic-honesty layer worked exactly as
 //   designed, but the review itself was still lost for the round). See
-//   verify-shots/research-round-4/.attractor-logs/r-20260724-205315/review_responsive/status.json.
+//   verify-shots/research-round-4/.dot-runner-logs/r-20260724-205315/review_responsive/status.json.
 //   Both review_ia and review_responsive are now shape=parallelogram (tool)
 //   nodes, following the IDENTICAL structural fix as capture/persona below
 //   — see their own node comments for the full mechanism-change writeup —
@@ -103,7 +103,7 @@
 // * SEQUENTIAL PERSONAS (single browser daemon): the engine's concurrency
 //   model is single-threaded at the top level — only ONE node executes at
 //   a time UNLESS it is fanned out via shape=component (Section 3.8 of the
-//   attractor spec). The persona nodes below are a plain linear chain
+//   dot-runner spec). The persona nodes below are a plain linear chain
 //   (never wrapped in a component/parallel node), so the engine itself
 //   structurally guarantees they never overlap. No extra locking needed —
 //   this IS the structural fix the design asked for.
@@ -161,8 +161,8 @@
 //
 // * RESUMABILITY: every stage has a file-existence guard node
 //   (shape=parallelogram, "check_*") ahead of its work node, following the
-//   proven graph-level self-skip pattern (see attractor's
-//   examples/pipelines/12-graph-resume.dot). The standalone `attractor run`
+//   proven graph-level self-skip pattern (see dot-runner's
+//   examples/pipelines/12-graph-resume.dot). The standalone `dot-runner run`
 //   CLI does NOT auto-resume from engine checkpoints — every invocation
 //   restarts at Start. Resumability here is entirely the file-guard
 //   pattern: delete an artifact to force that stage (and everything
@@ -202,7 +202,7 @@
 //
 // * RESUME vs EXACT RUN ID CHECKING (4th council round -- the ONE
 //   deliberate argument asymmetry between check_* and verify_*): a fresh
-//   `attractor run` with a NEW run_id must still be able to resume past
+//   `dot-runner run` with a NEW run_id must still be able to resume past
 //   a prior run's complete artifacts -- that is the entire point of the
 //   check_*/verify_* skip-guard pattern. But the very first version of
 //   the Run ID staleness check (previous bullet) applied ONE strict
@@ -339,7 +339,7 @@ digraph SimulatedUserResearch {
     ]
 
     // ------------------------------------------------------------------
-    // Required params (pass via `attractor run --param key=value`, every run):
+    // Required params (pass via `dot-runner run --param key=value`, every run):
     //   run_id           -- this round's unique run identifier, e.g.
     //                       r-20260723-140501 (no default -- the CONTRACT
     //                       with the parallel lib/CLI build is that the
@@ -396,7 +396,7 @@ digraph SimulatedUserResearch {
     //                       $-substitutable context key). The L2/L4 layers
     //                       (amplifier_simulated_user_research) compute this
     //                       automatically and pass it as --param
-    //                       sur_repo_dir=...; a direct `attractor run`
+    //                       sur_repo_dir=...; a direct `dot-runner run`
     //                       invocation must still pass it explicitly.
     //   browser_bundle   -- the bundle name or path run_browser_node.py's
     //                       --bundle flag should pass to
@@ -493,7 +493,7 @@ digraph SimulatedUserResearch {
     //     wrote), and is itself resumable via the SAME
     //     file-existence-guard pattern as seed (`.reset-complete`
     //     marker) -- NOT unconditional on every invocation. This matters
-    //     for crash-resume: the standalone `attractor run` CLI restarts
+    //     for crash-resume: the standalone `dot-runner run` CLI restarts
     //     every invocation at Start (see the header's RESUMABILITY
     //     note), so if reset_state had no skip-guard, resuming a round
     //     that already completed capture/personas would silently
@@ -576,7 +576,7 @@ digraph SimulatedUserResearch {
     // full context): this was a shape=box (LLM/codergen) node whose prompt
     // instructed the model never to end on a text-only reply. That
     // instruction demonstrably decays across attempts inside loop-agent's
-    // coding-agent loop: loop-agent (amplifier-bundle-attractor/modules/
+    // coding-agent loop: loop-agent (amplifier-bundle-dot-runner/modules/
     // loop-agent) treats ANY assistant reply with no tool call as natural
     // session completion -- hardcoded in agent_session.py.process_input,
     // NOT gated by any SessionConfig field (config.py has no "require
@@ -798,7 +798,7 @@ digraph SimulatedUserResearch {
     // to write the review. Let me compile the complete findings:", no
     // review-responsive.md ever written), burning all 3 retries and
     // hard-stopping this branch. See
-    // verify-shots/research-round-4/.attractor-logs/r-20260724-205315/review_responsive/status.json.
+    // verify-shots/research-round-4/.dot-runner-logs/r-20260724-205315/review_responsive/status.json.
     //
     // STRUCTURAL FIX: same as capture/persona -- now shape=parallelogram
     // (tool node) shelling out to scripts/run_browser_node.py --role

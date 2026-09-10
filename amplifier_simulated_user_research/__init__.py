@@ -1,10 +1,10 @@
 """amplifier_simulated_user_research -- L2 lib over the simulated-user-research
-attractor pipeline.
+dot-runner pipeline.
 
 The pipeline's `.dot` graph (pipelines/simulated-user-research.dot) is the
 single logic home: prompts, stages, retry policy, and the revision loop all
 live there. This package is a thin orchestration layer -- it builds and runs
-`attractor run ...` invocations, inspects the resulting artifacts, and keeps
+`dot-runner run ... --worker coding-agent` invocations, inspects the resulting artifacts, and keeps
 the run ledger (rounds.jsonl) + gate-triage records honest. It does not
 reimplement any pipeline behavior.
 

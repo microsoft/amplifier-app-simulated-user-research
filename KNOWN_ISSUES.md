@@ -6,7 +6,7 @@ Full provenance for the roadmap items: `docs/BEST-IN-CLASS-BACKLOG.md`.
 ## Deferred (agreed)
 
 - **Dependencies track `@main`, not SHAs.** Appropriate while the engine
-  (amplifier-bundle-attractor) is co-evolving with this repo; SHA-pin for
+  (amplifier-bundle-dot-runner) is co-evolving with this repo; SHA-pin for
   reproducible builds once the pipeline stabilizes. (Backlog Gate 3.)
 - **No measured cost-per-round dollar figure.** Wall-clock and per-stage timing
   land in `rounds.jsonl`; token/dollar receipts are hardware/model dependent and
@@ -19,11 +19,9 @@ Full provenance for the roadmap items: `docs/BEST-IN-CLASS-BACKLOG.md`.
   header comments). The acronym ban (AGENTS.md §Naming) covers user-facing
   surfaces; renaming proven internal plumbing is churn without user value.
   Revisit only if the graph gets a breaking param change anyway.
-- **The engine's binary name (`attractor`) is generic and not ours to change.**
-  Unrelated packages ship a command by that name, so a PATH collision is a
-  permanent environmental hazard. We defend locally instead of asking upstream
-  to rename: sibling-first resolution plus an identity probe of every candidate
-  (AGENTS.md pitfall 8). Revisit only if upstream namespaces its console script.
+- **The engine is invoked as `dot-runner`.** The adapter identity-probes each
+  candidate and resolves the interpreter sibling first, with PATH as fallback
+  (AGENTS.md pitfall 8).
 - **Revision cap finalizes gracefully.** Hitting the cap (3) appends a visible
   note and completes the run rather than hard-stopping — deliberate: at the cap,
   a spec-in-hand beats a dead pipeline. The human gate remains the authority.

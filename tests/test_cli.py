@@ -66,7 +66,7 @@ class TestRunGateMessaging:
             attractor_status="fail",
             gate_reached=True,
             artifacts={"research-spec.md": output_dir / "research-spec.md"},
-            logs_dir=output_dir / ".attractor-logs" / "r-20260723-120000",
+            logs_dir=output_dir / ".dot-runner-logs" / "r-20260723-120000",
             rounds_path=output_dir / "rounds.jsonl",
         )
         monkeypatch.setattr(
@@ -130,7 +130,7 @@ class TestRunWarnsOnStaleInstalledBuild:
             attractor_status="fail",
             gate_reached=True,
             artifacts={"research-spec.md": output_dir / "research-spec.md"},
-            logs_dir=output_dir / ".attractor-logs" / "r-20260726-000000",
+            logs_dir=output_dir / ".dot-runner-logs" / "r-20260726-000000",
             rounds_path=output_dir / "rounds.jsonl",
         )
         monkeypatch.setattr(
@@ -393,7 +393,7 @@ class TestTriageHarnessWarning:
         """Engine location varies by machine -- warning on it would be noise."""
         config_path = _valid_config_yaml(tmp_path)
         harness = self._current_harness(config_path)
-        harness["engine_path"] = "/some/other/machine/bin/attractor"
+        harness["engine_path"] = "/some/other/machine/bin/dot-runner"
         harness["engine_source"] = "PATH"
         self._seed(tmp_path, harness)
         self._answer(monkeypatch, ["a", "r"])

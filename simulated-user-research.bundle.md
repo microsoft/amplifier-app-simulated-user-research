@@ -3,7 +3,7 @@ bundle:
   name: simulated-user-research
   version: 0.1.0
   description: >
-    Agent-callable tools for the simulated-user-research attractor pipeline:
+    Agent-callable tools for the simulated-user-research dot-runner pipeline:
     run_research_round (drives a user-research-style audit round against a web
     product -- real browser, real seeded instance, reproducible evidence-labeled
     findings; persona reactions are simulation, hypotheses not testimony) and
@@ -20,7 +20,7 @@ providers:
 session:
   orchestrator:
     module: loop-agent
-    source: git+https://github.com/microsoft/amplifier-bundle-attractor@main#subdirectory=modules/loop-agent
+    source: git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/loop-agent
   context:
     module: context-simple
     source: git+https://github.com/microsoft/amplifier-module-context-simple@main

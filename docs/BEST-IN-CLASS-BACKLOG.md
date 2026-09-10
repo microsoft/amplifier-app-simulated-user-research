@@ -86,7 +86,7 @@ artifact blocks its own completion forever.
 ### Gate 3 — Operational maturity
 
 11. **Count the money, name the run** (crusty + bet-sizer): per-stage tokens/cost/wall-clock
-    receipt mined from `.attractor-logs`, in the spec footer.
+    receipt mined from `.dot-runner-logs`, in the spec footer.
 12. **Test what breaks; pin what we ride** (crusty/sam/breaker): golden tests for the
     wrapper's JSON/banner parsing and verify/retry arithmetic; SHA-pin @main deps; file the
     upstream loop-agent issue (text-only-reply completion) so the workaround isn't permanent.
@@ -124,7 +124,7 @@ parity is coming; the moat is the method + the measured precision number).
   running — it does not replace it") and the moat sentence (real browser · real instance ·
   reproducible findings) enters the positioning.
 - **B. The gift shop — RESOLVED: ALL layers stay** (owner call, overruling
-  cranky-old-sam's demolition recommendation). L1 attractor + Resolve sidecar, L2 lib,
+  cranky-old-sam's demolition recommendation). L1 dot-runner + Resolve sidecar, L2 lib,
   L3 tool module, L4 CLI are all retained as strategic surface area. Consequence accepted:
   the adapters must stay tested and integrated (backlog item 12's golden tests and the
   instrument trio become more load-bearing, not less), and every roadmap item carries the

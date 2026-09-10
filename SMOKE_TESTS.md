@@ -16,13 +16,10 @@ Playwright `headless_shell` fallback; a traceback is a failure).
 ## 2. Graph validation (~5s)
 
 ```bash
-uv run python -c "
-from amplifier_module_loop_pipeline import dot_parser, validation
-g = dot_parser.parse_dot(open('pipelines/simulated-user-research.dot').read())
-validation.validate_or_raise(g)
-print(f'OK: {len(g.nodes)} nodes, {len(g.edges)} edges')"
+uv run dot-runner lint pipelines/simulated-user-research.dot
 ```
-Expect parse + structural validation clean. Node/edge counts go in the PR body.
+Expect dot-runner's parser and structural lint clean. Diagnostics, if any, go
+in the PR body.
 
 ## 3. Cheap resume smoke (~2 min, no browser, minimal LLM spend)
 

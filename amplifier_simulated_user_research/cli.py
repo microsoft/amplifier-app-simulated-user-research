@@ -394,7 +394,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog=_PROG,
         description=(
             "Run simulated-user-research audit rounds "
-            "(orchestrates the attractor .dot pipeline)."
+            "(orchestrates the dot-runner .dot pipeline)."
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)

@@ -11,7 +11,7 @@ engine-dependency design, and how to extend the persona roster.
 Stages, prompts, file contracts, retry policy, and the revision loop all live
 there — change the process by editing the graph, not by re-implementing it
 elsewhere. Every other surface (the Python lib, the CLI, the agent tools) is a
-thin adapter that builds and runs `attractor` invocations of that same graph.
+thin adapter that builds and runs `dot-runner` invocations of that same graph.
 See the `amplifier-tool-leverage-patterns` skill for the pattern.
 
 ```
@@ -66,7 +66,9 @@ separate `reset_cwd` — the engine takes one working directory per run.
 
 Optional: `sur_repo_dir` (auto-detected from the installed package),
 `logs_root`, `browser_executable_path` / `browser_args` (custom browser — see
-ARM64 below), `attractor_checkout` (dev-only engine escape hatch).
+ARM64 below), `dot_runner_checkout` (dev-only engine escape hatch).
+Legacy `attractor_checkout: null` is accepted when loading existing configs;
+any nonempty legacy value fails loud and must be renamed.
 
 `amplifier-simulated-user-research run` rejects any config still carrying a `REPLACE ME`/`REPLACE_ME`
 placeholder, so an unedited scaffold fails loud instead of producing fiction.
@@ -88,10 +90,9 @@ amplifier-simulated-user-research triage --config my-round/project.yaml
 Gate policy values: `stop` (default; pause at the gate), `console` (answer
 interactively; the subprocess inherits your terminal, so for that run the
 ledger record is derived from ground truth — exit code, artifacts on disk,
-engine logs — and `stdout_tail`/`attractor_status` are empty), `auto-approve`
+engine logs — and `stdout_tail`/`engine_status` are empty), `auto-approve`
 (non-interactive; picks each gate's first choice), `fail` (deprecated alias
-for `stop`). Console-gate support is on `amplifier-bundle-attractor@main`
-(PR #95); on an older engine the CLI fails loud with the exact remediation.
+for `stop`). The installed dot-runner supports console gates.
 
 ## Run identity, ledger, and triage
 
@@ -147,15 +148,18 @@ finding IDs into your tracker); (3) cost + wall-clock receipt per round.
 
 This package depends on `amplifier-module-pipeline-runner` as a normal
 git-subdirectory dependency
-(`git+https://github.com/microsoft/amplifier-bundle-attractor@main#subdirectory=modules/pipeline-runner`)
-— verified installable: the whole chain (pipeline-runner → loop-pipeline →
-unified-llm-client) resolves via git subdirectories, and the `attractor`
-console script lands in the consuming environment. `run_round()` invokes that
-console script as a subprocess (PATH first, then the interpreter's sibling
-directory) rather than importing engine internals — the dependency stays
-behind its own CLI boundary. `RoundConfig.attractor_checkout` is a dev-only
-escape hatch that shells `uv run --project <checkout>/modules/pipeline-runner
-attractor ...` against a local engine checkout instead.
+(`git+https://github.com/microsoft/amplifier-bundle-dot-runner@main#subdirectory=modules/pipeline-runner`).
+This preserves Python 3.11 compatibility: do not depend on the root
+`amplifier-dot-runner` distribution, which requires Python 3.12. Both
+pyprojects declare the complete direct git closure — pipeline-runner,
+foundation, loop-pipeline with its `remote` extra, unified-llm-client,
+remote-source, and loop-agent. The last is required because every round
+invokes `dot-runner run ... --worker coding-agent`. `run_round()` invokes that
+console script as a subprocess (interpreter sibling first, then PATH) rather
+than importing engine internals. `RoundConfig.dot_runner_checkout` is a
+dev-only escape hatch that shells `uv run --project
+<checkout>/modules/pipeline-runner dot-runner ...` against a local engine
+checkout instead.
 
 ## ARM64 / custom browser
 
